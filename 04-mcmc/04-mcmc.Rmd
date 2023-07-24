@@ -1,0 +1,670 @@
+---
+title: "ABDA (week 4) Basics of MCMC: Exercises"
+author: "Florian Pätzold, 977687"
+date: "05/14/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  cache = F, 
+  message = FALSE, 
+  warning = FALSE, 
+  error = FALSE, 
+  fig.width = 5, 
+  fig.align = "center"
+  )
+
+```
+
+```{r libraries, message = FALSE, warning = FALSE, include = FALSE}
+
+# package for convenience functions (e.g. ggplot2, dplyr, etc.)
+library(tidyverse)
+
+# package for Bayesian regression modeling
+library(brms)
+
+# package for visualization
+library(tidybayes)
+
+# package to visualize 
+library(bayesplot)
+
+# these options help Stan run faster
+options(mc.cores = parallel::detectCores())
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# use the aida-theme for plotting
+theme_set(theme_aida())
+
+# global color scheme / non-optimized
+project_colors = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000")
+
+# setting theme colors globally
+scale_colour_discrete <- function(...) {
+  scale_colour_manual(..., values = project_colors)
+}
+scale_fill_discrete <- function(...) {
+   scale_fill_manual(..., values = project_colors)
+} 
+
+```
+
+# Instructions
+
+- If you need help, take a look at the suggested readings in the lecture, make use of the Forum, make use of the Forum, and also make use of the Forum.
+- Use the file `04-exercises.Rmd`, solve the exercises marked as homework, and save the file with your student number and name.
+- ‘Knit’ the document to produce a HTML file.  
+- Please do not suppress the code in the HTML-Output!
+- Create a ZIP archive called “MATRIKELNR_Lastname_Firstname_ABDA_Week4.zip” containing:
+  - an R Markdown file “MATRIKELNR_Lastname_Firstname_ABDA_Week4.Rmd”
+  - a knitted HTML document “MATRIKELNR_Lastname_Firstname_ABDA_Week4.html”
+- Upload the ZIP archive on Stud.IP in the homework folder before the deadline. You may upload as many times as you like before the deadline, only your final submission will count.
+
+# Preliminaries
+
+To use the latest additions to the course package, make sure to update once with manually executing the command:
+
+```{r, eval = F}
+# devtools::install_github("michael-franke/aida-package")
+```
+
+
+We are going to set a seed, so that results from (pseudo-)random executions are repeatable. 
+
+```{r}
+set.seed(1969)
+```
+
+
+# Motivation and learning goals
+
+The main **learning goals** of this week's practical part are:
+
+- get familiar with the Metropolis Hastings algorithm
+- see the importance of fine-tuning parameter for MH (in particular: the proposal function)
+- test samples for their representativeness (diagnostics)
+  - calculate and interpret the $\hat{R}$ statistic
+  - produce and interpret traceplots
+  - calculate and understand efficient sample size
+- understand how an "intercept-only" regression model estimates the parameters of a Gaussian model
+
+# <span style = "color:darkgreen">Exercise 1 [SELF-PRACTICE]:</span> A hand-coded MH-sampler for a single normal model
+
+We are going to, again, try to estimate the joint posterior of the mean $\mu$ and standard deviation $\sigma$ that could have generated the following fictitious (flower) data:
+
+```{r}
+# flower height data (as before)
+heights_A <- c(6.94, 11.77, 8.97, 12.2, 8.48, 
+               9.29, 13.03, 13.58, 7.63, 11.47, 
+               10.24, 8.99, 8.29, 10.01, 9.47, 
+               9.92, 6.83, 11.6, 10.29, 10.7, 
+               11, 8.68, 11.71, 10.09, 9.7)
+```
+We assume that priors on $\mu$ and $\sigma$ are independent, and that both are sampled from a wide Gaussian (truncated at zero in the case of $\sigma$, which cannot be non-positive):
+
+$$
+\begin{align*}
+\sigma & \sim \text{Trunc-Normal}(0, 50, 0)  \\
+\mu & \sim \text{Normal}(0, 50)  \\
+\end{align*}
+$$
+
+To implement the MH sampler, we are first going to define the "target function", i.e., the description of the distribution which we would like to approximate by sampling. In the case of a Bayesian posterior, this is the RHS of Bayes rule using non-normalized weights:
+
+$$
+P(\mu, \sigma \mid D) \propto P(\mu, \sigma) \times P(D \mid \mu, \sigma)
+$$
+Since the values of $P(\mu, \sigma) \times P(D \mid \mu, \sigma)$ can become very small, especially for cases with many data points, the function below returns the logarithm of the non-normalized posteriors, because logarithms of very small numbers are negatives of very large numbers and these are more precisely represented by modern computers:
+
+```{r}
+# target function to approximate:
+#   log of non-normalized posterior: prior times likelihood
+target_f <- function(mu, sigma){
+  # sigma cannot be negative
+  if (sigma <=0){
+    return(-Inf)
+  }
+  # prior over mean mu: normal distribution
+  prior_mu    <- dnorm(mu, mean = 0, sd = 50, log = T)
+  # prior over sigma: (truncated) normal distribution
+  prior_sigma <- dnorm(sigma, mean = 0, sd = 50, log = T)
+  likelihood  <- sum(dnorm(heights_A, mean = mu, sd = sigma, log = T))
+  return(prior_mu + prior_sigma + likelihood)
+}
+```
+
+Here is an instance of a Metropolis Hastings sampler. The most important parts to understand here are:
+
+- the initialization of parameters for the jumping, which is here informed by the data to start in reasonable vicinity to the "typical set"
+- the sampling of the proposal step, which is asymmetric for $\sigma$, which is why we use MH in the first place, following the description in Chapter 13.8 of Lambert's book
+- the calculation of the acceptance probability, correcting for the asymmetry in the proposal function
+
+What is less important theoretically, but useful to note for technical reasons is that the output is presented as a so-called `mcmc.list`, which is a special object defined in the `coda` package to deal with results from MCMC samplers.
+
+```{r}
+MH_Gaussian <- function(iterations = 50, chains = 2, warmup = 0){
+  # prepare 'container' to store the output
+  out <- array(0, dim = c(chains, iterations - warmup, 2))
+  dimnames(out) <- list("chain" = 1:chains, 
+                       "iteration" = 1:(iterations-warmup), 
+                       "variable" = c("mu", "sigma"))
+  # iterate over chains
+  for (c in 1:chains){
+    # sample initial parameters at random using the data to guide us to the "typical set"
+    mu    <- rnorm(1, mean = 10, sd = 7)
+    sigma <- abs(rnorm(1, mean = 0, sd = 10))
+    # iterate MCMC steps
+    for (i in 1:iterations){
+      # generate proposal for next parameter pair
+      mu_next    <- rnorm(1, mean = mu, sd = 1)
+      d <- 1
+      sigma_next <- rlnorm(1, mean = log(sigma) - 0.5*d^2, sdlog = d)
+      # calculate the accept rate (correcting for asymetric proposals for sigma)
+      accept_prob <- min(
+        exp(
+          target_f(mu_next, sigma_next) - 
+            target_f(mu, sigma) + 
+            dlnorm(sigma, mean = log(sigma_next) - 0.5*d^2, sdlog = d, log = T) - 
+            dlnorm(sigma_next, mean = log(sigma) - 0.5*d^2, sdlog = d, log = T)
+        ), 
+        1
+      )
+      # test the accept rate
+      if (rbernoulli(1, p = accept_prob)) {
+        mu    <- mu_next
+        sigma <- sigma_next
+      }
+      # record sample (only after warmup)
+      if (i >= warmup){
+        out[c,i-warmup,1] <- mu
+        out[c,i-warmup,2] <- sigma
+      }
+    }
+  }
+  # return samples as an 'mcmc.list' object (from the 'coda' package)
+  return(coda::mcmc.list(map(1:chains, function(c) coda::mcmc(out[c,,]))))
+}
+```
+
+Let's now take 20,000 samples from four chains each, discarding the initial 5000 from each chain, so that we end up with $4 \times 15,000 = 60,000$ samples.
+
+```{r}
+MH_samples_Gaussian <- MH_Gaussian(
+  iterations = 20000, 
+  chains = 4, 
+  warmup = 5000
+)
+```
+
+## <span style = "color:darkgreen">Exercise 1a [SELF-PRACTICE]:</span> Inspecting the output
+
+Get familiar with the output we have just obtained. Use `head` and `summary` and try to understand what you see. If you want to know more about `mcmc.list` objects in general (though this is not going to be very relevant for this course) use `help('mcmc.list')`.
+
+```{r}
+head(MH_samples_Gaussian)
+print(summary(MH_samples_Gaussian), digits=6)
+```
+
+
+## <span style = "color:darkgreen">Exercise 1b [SELF-PRACTICE]:</span> Make a scatter plot of the samples
+
+To work with samples stored as an `mcmc.list` in a tidyverse workflow, we can use the function `ggmcmc::ggs` from the `ggmcmc` package.
+
+```{r}
+MH_samples_Gaussian_tidy <- ggmcmc::ggs(MH_samples_Gaussian)
+head(MH_samples_Gaussian_tidy)
+```
+
+Use `MH_samples_Gaussian_tidy` to produce a scatter plot with $\sigma$ on the $x$-axis and $\mu$ on the $y$-axis.
+
+```{r}
+MH_samples_Gaussian_tidy <- 
+  MH_samples_Gaussian_tidy %>%
+  pivot_wider(names_from = Parameter, values_from = value)
+
+MH_samples_Gaussian_tidy %>% 
+  ggplot(aes(x = sigma, y = mu)) +
+  geom_point(alpha = 0.05) +
+  theme_aida()
+```
+
+## <span style = "color:darkgreen">Exercise 1c [SELF-PRACTICE]:</span> More summary statistics and a comparison to previous results
+
+Use the convenience function `summarize_sample_vector` to obtain a tibble of means and 95% credible intervals for each parameter (like we did in earlier weeks). Compare the results from the homebrew MH to the results from sampling with the non-informative standard prior we used before. Are there any major differences? Are you surprised that there are (none)?
+
+```{r}
+# convenience functions (from last week)
+summarize_sample_vector <- function(samples, name = '') {
+    tibble(
+      Parameter = name,
+      '|95%' = HDInterval::hdi(samples)[1],
+      mean  = mean(samples),
+      '95%|' = HDInterval::hdi(samples)[2]
+    )
+}
+```
+
+
+```{r}
+rbind(
+  summarize_sample_vector(samples = MH_samples_Gaussian_tidy$mu, name="mu"),
+  summarize_sample_vector(samples = MH_samples_Gaussian_tidy$sigma, name="sigma")
+)
+```
+
+## <span style = "color:darkgreen">Exercise 1d [SELF-PRACTICE]:</span> Inspecting chain diagnostics
+
+The `coda` package defines a number of useful functions for running MCMC diagnostics. But let's first look at a traceplot for our samples, making use of the plotting facilities of the `bayesplot` package. Run the following command and try to evaluate whether this picture suggests convergence:
+
+```{r}
+bayesplot::mcmc_trace(MH_samples_Gaussian)
+```
+
+**Answer:** The picture suggests convergence, as the chains are fairly intertwined, "hangling" around about the same typical set.
+
+If we want to have a numerical measure of chain convergence, we can produce the $\hat{R}$ statistic for each parameter like so:
+
+```{r}
+coda::gelman.diag(MH_samples_Gaussian)
+```
+
+Inspect the output and determine whether this suggests convergence.
+
+**Answer:** As $\hat{R} \ll 1.1$, the numerical measure indicates convergence of chains (within- and between-variance are smiliar).
+
+Remember that we have 4 * 15,000 = 60,000 samples in total for each paramter. Let's calculate the effective sample size, i.e., an estimate of how much information we get in terms of independent samples:
+
+```{r}
+coda::effectiveSize(MH_samples_Gaussian)
+```
+
+That's not at all very efficient, as we will see when comparing it to, e.g., the output of Hamiltonian Monte Carlo below.
+
+# <span style = "color:darkgreen">Exercise 2 [SELF-PRACTICE]:</span> Messing with the fine-tuning
+
+Now we are going to mess things up. The code above seems to have worked. The samples obtained seem to be representative and somewhat reasonably efficient samples from the posterior distribution. Now we want to see how samples look when things go wrong. We also want to see how certain parameters of the MH-sampling algorithm contribute to obtaining good/bad samples. Obviously, the main goal is to better understand the mechanics of MH and MCMC in the first place. The main screws we turn are:
+
+- initial parameter choice
+- width of the proposal function
+- number of iterations and warmup
+
+
+## <span style = "color:darkgreen">Exercise 2a [SELF-PRACTICE]:</span> Far-off initialization and tiny steps
+
+The MH instance below initializes parameters randomly but somewhere likely to be far outside the "typical set". It also uses a very narrow range for likely proposals. Inspect the code below (see the places where the comments say "CHANGED") and try to understand *what* has changed. Then try to predict what will happen to the MCMC samples before actually running the code.
+
+```{r}
+MH_Gaussian_faroff_tiny <- function(iterations = 50, chains = 2, warmup = 0){
+  # prepare 'container' to store the output
+  out <- array(0, dim = c(chains, iterations - warmup, 2))
+  dimnames(out) <- list("chain" = 1:chains, 
+                       "iteration" = 1:(iterations-warmup), 
+                       "variable" = c("mu", "sigma"))
+  # iterate over chains
+  for (c in 1:chains){
+    # CHANGED: sample initial parameters at random far outside the expected "typical set"
+    mu    <- rnorm(1, mean = 1000, sd = 500)
+    sigma <- abs(rnorm(1, mean = 1000, sd = 500))
+    # iterate MCMC steps
+    for (i in 1:iterations){
+      # CHANGED: extremely narrow proposals
+      mu_next    <- rnorm(1, mean = mu, sd = 0.01)
+      d <- 0.01
+      sigma_next <- rlnorm(1, mean = log(sigma) - 0.5*d^2, sdlog = d)
+      # calculate the accept rate (correcting for asymetric proposals for sigma)
+      accept_prob <- min(
+        exp(
+          target_f(mu_next, sigma_next) - 
+            target_f(mu, sigma) + 
+            dlnorm(sigma, mean = log(sigma_next) - 0.5*d^2, sdlog = d, log = T) - 
+            dlnorm(sigma_next, mean = log(sigma) - 0.5*d^2, sdlog = d, log = T)
+        ), 
+        1
+      )
+      # test the accept rate
+      if (rbernoulli(1, p = accept_prob)) {
+        mu    <- mu_next
+        sigma <- sigma_next
+      }
+      # record sample (only after warmup)
+      if (i >= warmup){
+        out[c,i-warmup,1] <- mu
+        out[c,i-warmup,2] <- sigma
+      }
+    }
+  }
+  # return samples as an 'mcmc.list' object (from the 'coda' package)
+  return(coda::mcmc.list(map(1:chains, function(c) coda::mcmc(out[c,,]))))
+}
+```
+
+
+**Answer:** The chains will not intertwine, thus the samples will very likely not lie near the typical set.
+
+## <span style = "color:darkgreen">Exercise 2b [SELF-PRACTICE]:</span> Obtain samples and diagnostics
+
+Now collect 5,000 samples from four chains each, without any warmup.
+
+```{r}
+MH_samples_Gaussian_tiny <- MH_Gaussian_faroff_tiny(
+  iterations = 5000, 
+  chains = 4, 
+  warmup = 0
+)
+```
+
+Look at the traceplots for the parameters.
+
+```{r}
+bayesplot::mcmc_trace(MH_samples_Gaussian_tiny)
+```
+
+Check $\hat{R}$:
+
+```{r}
+coda::gelman.diag(MH_samples_Gaussian_tiny)
+```
+
+## <span style = "color:darkgreen">Exercise 2c [SELF-PRACTICE]:</span> Far-off initialization and large steps
+
+Like in the previous messed-up version, the MH instance below initializes parameters randomly but somewhere likely to be far outside the "typical set". But now it also uses a large range for likely proposals. Inspect the code below (see the places where the comments say "CHANGED") and try to understand *what* has changed. Then try to predict what will happen to the MCMC samples before actually running the code.
+
+```{r}
+MH_Gaussian_faroff_large <- function(iterations = 50, chains = 2, warmup = 0){
+  # prepare 'container' to store the output
+  out <- array(0, dim = c(chains, iterations - warmup, 2))
+  dimnames(out) <- list("chain" = 1:chains, 
+                       "iteration" = 1:(iterations-warmup), 
+                       "variable" = c("mu", "sigma"))
+  # iterate over chains
+  for (c in 1:chains){
+    # sample initial parameters at random far outside the expected "typical set"
+    mu    <- rnorm(1, mean = 1000, sd = 500)
+    sigma <- abs(rnorm(1, mean = 1000, sd = 500))
+    # iterate MCMC steps
+    for (i in 1:iterations){
+      # CHANGED: rather large proposal ranges
+      mu_next    <- rnorm(1, mean = mu, sd = 50)
+      d <- 5
+      sigma_next <- rlnorm(1, mean = log(sigma) - 0.5*d^2, sdlog = d)
+      # calculate the accept rate (correcting for asymetric proposals for sigma)
+      accept_prob <- min(
+        exp(
+          target_f(mu_next, sigma_next) - 
+            target_f(mu, sigma) + 
+            dlnorm(sigma, mean = log(sigma_next) - 0.5*d^2, sdlog = d, log = T) - 
+            dlnorm(sigma_next, mean = log(sigma) - 0.5*d^2, sdlog = d, log = T)
+        ), 
+        1
+      )
+      # test the accept rate
+      if (rbernoulli(1, p = accept_prob)) {
+        mu    <- mu_next
+        sigma <- sigma_next
+      }
+      # record sample (only after warmup)
+      if (i >= warmup){
+        out[c,i-warmup,1] <- mu
+        out[c,i-warmup,2] <- sigma
+      }
+    }
+  }
+  # return samples as an 'mcmc.list' object (from the 'coda' package)
+  return(coda::mcmc.list(map(1:chains, function(c) coda::mcmc(out[c,,]))))
+}
+```
+
+**Answer:** The chains will once again not merge and the samples will lie near our typical set, but the samples are not able to capture the posteriors form as many proposals will likely be rejected.
+
+
+## <span style = "color:darkgreen">Exercise 2d [SELF-PRACTICE]:</span> Sample and inspect
+
+Now collect 5,000 samples from four chains each, without any warmup.
+
+```{r}
+MH_samples_Gaussian_large <- MH_Gaussian_faroff_large(
+  iterations = 5000, 
+  chains = 4, 
+  warmup = 0
+)
+```
+
+Look at the traceplots for the parameters.
+
+```{r}
+bayesplot::mcmc_trace(MH_samples_Gaussian_large)
+```
+
+Check $\hat{R}$:
+
+```{r}
+coda::gelman.diag(MH_samples_Gaussian_large)
+```
+
+# <span style = "color:firebrick">Exercise 3 [HOMEWORK]:</span> Compare efficiency to a much better sampler 
+
+Let's use `brms` to obtain samples from the Gaussian model for the flower data in order to learn two things:
+
+1. How to see that the "single Gaussian" model is a special case of linear regression.
+
+2. To see how much more efficient the sampler is that `brms` relies on.
+
+## <span style = "color:firebrick">Exercise 3a [HOMEWORK]:</span> Intercept-only model
+
+Consider $N$ metric measurements in vector $\vec{y}$ and a regression model for the data in $\vec{y}$ which contains only an intercept parameter. Write down the likelihood function for this regression model and argue (informally, in one short sentence) that this model is equivalent to a single Gaussian model (of the kind we analyzed above). 
+
+**Answer:** The likelihood of the constant model is defined by $LH = mean(\vec{y})$.
+The model is equivalent to the model above, because the constant model is essentially just the mean of the data points, which is the same for the model of the normal distribution.
+
+## <span style = "color:firebrick">Exercise 3b [HOMEWORK]:</span> Running the intercept-only model with `brms`
+
+Run the following code to obtain samples from the intercept-only model in `brms`. Notice the formula syntax `heights_A ~ 1` where we specify the intercept with the number 1. Notice also that we can set parameters about the MCMC sampling process in the call to `brm`, specifying the number of chains, the samples to obtain and the warmup.
+
+```{r, results = 'hide'}
+HMC_samples_Gaussian <- brm(
+  formula = heights_A ~ 1,
+  data = tibble(heights_A),
+  chains = 4, 
+  iter = 20000, 
+  warmup = 5000
+)
+```
+
+Use the function `plot` to produce a traceplot from the `brms-fit` object `HMC_samples_Gaussian`. Interpret what you see, in particular say whether the picture suggests convergence.
+
+```{r}
+# plot(HMC_samples_Gaussian)
+bayesplot::mcmc_trace(HMC_samples_Gaussian)
+```
+
+**Answer:** The trace plot suggests convergence, as the chains are fairly intertwined.
+
+Use `summary` to obtain more information about the `brms-fit` object `HMC_samples_Gaussian`. Find information on the efficient sample size for these samples and comment on the direct comparison with the hand-made MH-algorithm.
+
+```{r}
+summary(HMC_samples_Gaussian)
+```
+
+```{r}
+coda::effectiveSize(HMC_samples_Gaussian)
+```
+```{r}
+coda::effectiveSize(MH_samples_Gaussian)
+```
+
+**Answer:** The efficient sample size of the model in brms is very large in comparison, namely about 40000 samples, while the effective samples of the hand-made algorithm lies just around 2600. Thus, our model is way more effective in brms.
+
+# <span style = "color:firebrick">Exercise 4 [HOMEWORK]:</span> A hand-coded MH-sampler for a regression model
+
+To apply our knowledge of the mechanics of an MH-sampler, let's apply it to our running example of a linear regression of Area-Under-Curve predicted by Maximum-Absolute-Deviation for the mouse-tracking data. Here's the data we'd like to use (as before):
+
+```{r}
+# pick up data set
+dolphin <- aida::aidata
+
+# aggregate (as before)
+dolphin_agg <- dolphin %>% 
+  filter(correct == 1) %>% 
+  group_by(subject_id) %>% 
+  dplyr::summarize(AUC = median(AUC, na.rm = TRUE),
+            MAD = median(MAD, na.rm = TRUE)) 
+  
+# to-be-explained variable y
+y <- dolphin_agg$AUC
+
+# explanatory variables x
+x <- dolphin_agg$MAD
+
+# number of observations
+N <- length(y)
+```
+
+
+## <span style = "color:firebrick">Exercise 4a [HOMEWORK]:</span> Fix the target function
+
+As in the previous case of a Gaussian model, we first define the "target function", the logarithm of non-normalized posteriors. The code below contains four occurrences of `XXX` where you should fill in the required code to make this work.
+
+```{r}
+# target function to approximate:
+#   log of non-normalized posterior: prior times likelihood
+target_f <- function(beta_0, beta_1, sigma){
+  # sigma cannot be negative
+  if (sigma <=0){
+    return(-Inf)
+  }
+  # prior over coefficients: normal distributions
+  prior_beta_0 <- dnorm(beta_0, mean = 0, sd = 10000, log = T)
+  prior_beta_1 <- dnorm(beta_1, mean = 0, sd = 10000, log = T)
+  # prior over sigma: (truncated) normal distribution (informed by data)
+  prior_sigma  <- dnorm(sigma, mean = 15000, sd = 10000, log = T)
+  likelihood   <-  sum(map_dbl(1:N, function(i) {dnorm(x = y[i], mean = beta_0 + beta_1 * x[i], sd = sigma, log = T)}))
+  return(prior_beta_0 + prior_beta_1 + prior_sigma + likelihood)
+}
+```
+
+## <span style = "color:firebrick">Exercise 4b [HOMEWORK]:</span> Fix the MH-sampler
+
+Here is a version of the MH-sampler with some of the most important parameters that influence sampling success pulled out and initialized very badly. Find values for these parameters such that $\hat{R}$ is below 1.1 for all parameters (or as close to 1.1 as you can get it). Do this for samples of 15,000 iterations per chain (after warm-up), with four chains and a warm-up of 5,000.  
+
+**Hints:** Notice that one sampling round takes quite some time. That's why you really want to understand what changing different parameters will do to the chains. Inspect the traceplots to see what may have gone wrong. Try out a few parameter values, then think. Trial-and-error without understanding is not efficient here.
+
+```{r}
+
+initial_mean_beta_0 <- 500
+initial_mean_beta_1 <- 100
+
+initial_SD_beta_0 <- 20
+initial_SD_beta_1 <- 70
+  
+proposal_SD_beta_0 <- 500
+proposal_SD_beta_1 <- 10
+  
+MH_regression <- function(iterations = 50, chains = 2, warmup = 0){
+  # prepare 'container' to store the output
+  out <- array(0, dim = c(chains, iterations - warmup, 3))
+  dimnames(out) <- list("chain" = 1:chains, 
+                       "iteration" = 1:(iterations-warmup), 
+                       "variable" = c("beta_0", "beta_1", "sigma"))
+  # iterate over chains
+  for (c in 1:chains){
+    # sample initial parameters in a way that is informed by the data (to ease inference)
+    beta_0 <- rnorm(1, mean = initial_mean_beta_0, sd = initial_SD_beta_0)
+    beta_1 <- rnorm(1, mean = initial_mean_beta_1, sd = initial_SD_beta_1)
+    sigma  <- rnorm(1, mean = 15000, sd = 2000)
+    # iterate MCMC steps
+    for (i in 1:iterations){
+      # generate proposal for next parameter pair
+      beta_0_next <- rnorm(1, mean = beta_0, sd = proposal_SD_beta_0)
+      beta_1_next <- rnorm(1, mean = beta_1, sd = proposal_SD_beta_1)
+      d <- 1
+      sigma_next <- rlnorm(1, mean = log(sigma) - 0.5*d^2, sdlog = d)
+      # calculate the accept rate (correcting for asymetric proposals for sigma)
+      accept_prob <- min(
+        exp(
+          target_f(beta_0_next, beta_1_next, sigma_next) - 
+            target_f(beta_0, beta_1, sigma) +
+            dlnorm(sigma, mean = log(sigma_next) - 0.5*d^2, sdlog = d, log = T) - 
+            dlnorm(sigma_next, mean = log(sigma) - 0.5*d^2, sdlog = d, log = T)
+        ), 
+        1
+      )
+      # check wether to accept the proposal & update
+      if (rbernoulli(1, p = accept_prob)) {
+        beta_0 <- beta_0_next
+        beta_1 <- beta_1_next
+        sigma  <- sigma_next
+      }
+      # record sample (only after warmup)
+      if (i >= warmup){
+        out[c,i-warmup,1] <- beta_0
+        out[c,i-warmup,2] <- beta_1
+        out[c,i-warmup,3] <- sigma
+      }
+    }
+  }
+  # return samples as an 'mcmc.list' object (from the 'coda' package)
+  return(coda::mcmc.list(map(1:chains, function(c) coda::mcmc(out[c,,]))))
+}
+```
+
+
+```{r}
+MH_samples_regression <- MH_regression(
+  iterations = 20000, 
+  chains = 4, 
+  warmup = 5000
+)
+
+bayesplot::mcmc_trace(MH_samples_regression)
+coda::gelman.diag(MH_samples_regression)
+print(summary(MH_samples_regression), digits = 6)
+```
+
+## <span style = "color:firebrick">Exercise 4c [HOMEWORK]:</span> Plot the posterior samples 
+
+Make a scatter plot of the samples, with samples for $\beta_0$ on the $x$-axis and samples for $\beta_1$ on the $y$-axis. Comment on whether, given model and data, belief in the proposition that the slope is positive seems warranted.
+
+```{r}
+MH_samples_regression_tidy <- ggmcmc::ggs(MH_samples_regression)
+head(MH_samples_regression_tidy)
+
+MH_samples_regression_tidy <- 
+  MH_samples_regression_tidy %>%
+  pivot_wider(names_from = Parameter, values_from = value)
+
+MH_samples_regression_tidy %>% 
+  ggplot(aes(x = beta_0, y = beta_1)) +
+  geom_point(alpha = 0.05) +
+  theme_aida()
+```
+
+**Answer:** Given our MH model, which seems to suggest convergence since the chains are indifferentiable intertwined, and our data we could conclude that it is reasonable to propose a positive slope (beta_1) of the regression as its mean lies around 450.
+
+# <span style = "color:darkorange">Exercise 5 [BONUS]:</span> A hand-coded Gibbs sampler for binomial data
+
+Suppose we know that a coin was flipped $N = 50$ times. We do not know the coin's bias $\theta$, but hold the following prior beliefs: $\theta \sim \text{Beta}(5, 10)$. We also do not know the number $k$ of observed successes, but believe that any number $0, \dots, 50$ is equally likely. 
+
+We are interested in the joint posterior distribution $P(\theta, k \mid N)$. Write your own hand-crafted Gibbs sampler to obtain samples from this joint posterior distribution. Set the initial values of $\theta$ and $k$ for each chain to random samples for the priors. Collect 5,000 samples from each of four chains (20,000 samples in total) after a burn-in of 2,000 with no thinning and visualize the results in a scatter plot. Check model convergence using $\hat{R}$ and determine the efficient sample size.
+
+Notice that the conditional posteriors for each parameter of relevance are:
+
+$$
+\begin{aligned}
+k \mid \theta, N & \sim \text{Binom}(\theta, N)\\
+\theta \mid k, N & \sim \text{Beta}(5 + k , 10 + N - k)
+\end{aligned}
+$$
+
+```{r}
+# your solution here
+```

@@ -1,0 +1,178 @@
+---
+title: "Data Visualization using ggplot2"
+author: "Florian Pätzold, 977687"
+output: html_document
+---
+
+```{r echo=F}
+knitr::opts_chunk$set(
+  warning = FALSE, # supress warnings per default 
+  message = FALSE  # supress messages per default 
+)
+```
+
+```{r preprocessing, echo=F}
+
+## Preprocessing
+
+# let's load in the libraries we need for the following session. 
+library(tidyverse)
+library(ggbeeswarm)
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# our dataset
+dolphin <- aida::aidata
+
+```
+
+## Exercises
+
+### Exercise 1
+
+Take the scatter plot below as a departure point. It plots AUC (area-under-the-curve) against MAD (maximal absolute deviation). 
+
+```{r x1, warning = F, fig.width = 8, fig.align="center"}
+
+ggplot(dolphin, aes(x = MAD, y = AUC)) +
+  geom_point() +
+  ggtitle("a scatter plot") +
+  theme_aida()
+
+```
+
+a) Change both the x-axis and the y-axis title to sensible and informative titles.
+
+```{r x1a, fig.width = 8, fig.align="center"}
+
+ggplot(dolphin, aes(x = MAD, y = AUC)) +
+  geom_point() +
+  ggtitle("a scatter plot") +
+  xlab("\n Size of Competition effect (MAD)") +
+  ylab("Size of typicality effect (AUC) \n") +
+  theme_aida()
+
+```
+
+b) Change the plot title to something informative.
+
+```{r x1b, fig.width = 8, fig.align="center"}
+
+ggplot(dolphin, aes(x = MAD, y = AUC)) +
+  geom_point() +
+  ggtitle("Area under the curve plotted onto the maximum absolute deviation") +
+  xlab("\n Size of Competition effect (MAD)") +
+  ylab("Size of typicality effect (AUC) \n") +
+  theme_aida()
+
+```
+
+c) Change the scaling of the x-axis to display only MAD values between -500 and 500
+
+```{r x1c, fig.width = 8, fig.align="center"}
+
+ggplot(dolphin, aes(x = MAD, y = AUC)) +
+  geom_point() +
+  ggtitle("Area under the curve plotted onto the maximum absolute deviation") +
+  xlab("\n Size of Competition effect (MAD)") +
+  ylab("Size of typicality effect (AUC) \n") +
+  scale_x_continuous(limits = c(-500,500)) +
+  theme_aida()
+
+```
+
+d) Add a color aesthetic for the predictor `group`.
+
+```{r x1d, fig.width = 8, fig.align="center"}
+
+ggplot(dolphin, aes(x = MAD, y = AUC, color = group)) +
+  geom_point() +
+  ggtitle("Area under the curve plotted onto the maximum absolute deviation") +
+  xlab("\n Size of Competition effect (MAD)") +
+  ylab("Size of typicality effect (AUC) \n") +
+  scale_x_continuous(limits = c(-500,500)) +
+  theme_aida()
+
+```
+
+### HOMEWORK ###
+## please upload your solutions to studIP as an .Rmd file
+
+## Exercise 2
+
+a) Plot AUC values as a function of group in a density plot (`geom_density`).
+
+```{r x2a, fig.width = 8, fig.align = "center"}
+
+ggplot(dolphin, aes(x = AUC, color = group, fill = group)) +
+  geom_density()
+
+```
+
+b) Color code the curves (the border and the filling) as follows: "orange" for the click group and "black" for the touch group.
+
+```{r x2b, fig.width = 8, fig.align = "center"}
+
+ggplot(dolphin, aes(x = AUC, color = group, fill = group)) +
+  geom_density() +
+  scale_colour_manual(values = c("orange", "black"), aesthetics = c("colour", "fill"))
+
+```
+
+c) Make the density curves semi-transparent with the `alpha` argument.
+
+```{r x2c, fig.width = 8, fig.align = "center"}
+
+ggplot(dolphin, aes(x = AUC, color = group, fill = group)) +
+  geom_density(alpha = 0.5) +
+  scale_colour_manual(values = c("orange", "black"), aesthetics = c("colour", "fill"))
+
+```
+
+d) Add the aida_theme to the plot.
+
+```{r x2d, fig.width = 8, fig.align = "center"}
+
+ggplot(dolphin, aes(x = AUC, color = group, fill = group)) +
+  geom_density(alpha = 0.5) +
+  scale_colour_manual(values = c("orange", "black"), aesthetics = c("colour", "fill")) +
+  theme_aida()
+
+```
+
+e) BONUS: Add the mean values for both groups into the density plot as a line.
+
+```{r x2e, fig.width = 8, fig.align = "center"}
+
+# Wrangle data frame to necessary values.
+AUC_means <- 
+  dolphin %>%
+  dplyr::select(group, AUC) %>% 
+  group_by(group) %>% 
+  summarise(mean_AUC = mean(AUC, na.rm=T))
+
+AUC_means
+
+# Extract the numbers in question for a better overview 
+# by accessing the data frame column "mean_AUC".
+click_mean <- AUC_means$mean_AUC[1]
+touch_mean <- AUC_means$mean_AUC[2]
+  
+ggplot(dolphin, aes(x = AUC, color = group, fill = group)) +
+  geom_density(alpha = 0.5) +
+  scale_colour_manual(values = c("orange", "black"), aesthetics = c("colour", "fill")) +
+  # Let's add the mean values as vertical lines.
+  geom_vline(xintercept = click_mean, color = "orange") +
+  geom_vline(xintercept = touch_mean, color = "black") +
+  # Let's also add some label descriptions.
+  labs(title = "A density plot of AUC values.", 
+       x = "\n Area under the curve", 
+       y = "Density \n", 
+       caption = "\n The vertical lines indicate the mean 
+                  value of the AUC for each group.") +
+  theme_aida()
+
+```
+
+

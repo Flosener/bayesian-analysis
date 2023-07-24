@@ -1,0 +1,264 @@
+---
+title: "Simple Regression with brms (Exercise)"
+author: "Florian Pätzold, 977687"
+date: "05/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  eval = T, 
+  cache = FALSE, 
+  message = FALSE, 
+  warning = FALSE, 
+  error = FALSE, 
+  fig.width = 5, 
+  fig.align = "center")
+
+```
+
+```{r libraries, message = FALSE, warning = FALSE, include = FALSE}
+
+# package for convenience functions (e.g. ggplot2, dplyr, etc.)
+library(tidyverse)
+
+# package for Bayesian regression modeling
+library(brms)
+
+# package for visualization
+library(tidybayes)
+
+# package to visualize 
+library(bayesplot)
+
+# these options help Stan run faster
+options(mc.cores = parallel::detectCores())
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# and our dataset, let's call it dolphin
+dolphin <- aida::aidata
+
+# use the aida-theme for plotting
+theme_set(theme_aida())
+
+# global color scheme / non-optimized
+project_colors = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000")
+
+# setting theme colors globally
+scale_colour_discrete <- function(...) {
+  scale_colour_manual(..., values = project_colors)
+}
+scale_fill_discrete <- function(...) {
+   scale_fill_manual(..., values = project_colors)
+} 
+
+
+```
+
+## Exercises
+
+### Exercise 1
+
+a) Massage the data and create a new dataset that contains only correct responses and only the mean values of the RT and the AUC measurement for each participant (`subject_id`). Print out the `head` of the dataset.
+
+```{r exercise1a, echo = FALSE}
+
+dolphin_agg <- 
+  dolphin %>% 
+  filter(correct == 1) %>% 
+  group_by(subject_id) %>% 
+  dplyr::summarize(RT = mean(RT, na.rm = TRUE), AUC = mean(AUC, na.rm = TRUE)) 
+
+head(dolphin_agg)
+
+```
+
+We know from the previous exercises (walkthrough) that the area-under-the-curve (AUC) is related to the maximum absolute deviation (MAD).
+But what about reaction times (RTs)? Isn't it plausible that RTs are also related to AUC? The further I curve away from the target with the cursor, the longer it takes me to arrive at the target, right?
+
+(b) Plot the relationship between RT and AUC in a scatterplot.
+
+```{r exercise1b}
+
+ggplot(data = dolphin_agg, aes(x = RT, y = AUC)) + 
+  geom_point(size = 3, alpha = 0.3) +
+  theme_aida()
+
+```
+
+(c) Run a linear regression using `brms`. AUC is the dependent variable (i.e. the measure) and RT is the independent variables (i.e. the predictor). The formula writes: `AUC ~ RT`
+
+```{r exercise1c, cache = TRUE}
+
+model1 = brm(formula = AUC ~ RT, data = dolphin_agg)
+
+```
+
+(d) Look at the model output. Think of it in terms of a line in the scatterplot from (1b). Where does the regression line cross the y-axis, what is the slope of the line? Draw a scatterplot of AUC against RT and add the predicted values as a line.
+
+```{r exercise1d1}
+summary(model1)
+```
+
+**Answer:** The regression line crosses the y-axis at ~77185 (intercept) and the slope is -11.2, indicating a negative development of AUC scores with increasing RT value.
+
+```{r exercise1d2}
+
+intercept = summary(model1)$fixed[1]
+slope = summary(model1)$fixed[2]
+
+ggplot(data = dolphin_agg, aes(x = RT, y = AUC)) + 
+  geom_abline(aes(intercept = intercept, slope = slope), color = "black", size  = 1.5) +
+  geom_point(size = 3, alpha = 0.3) +
+  theme_aida()
+
+```
+
+That doesn't really look like what we have expected, right? If there is any relationship, AUC values become lower with longer reaction times (the line has a negative slope).
+
+(e) Now create a new dataframe which contains the extracted posteriors for `b_RT` from the model output (use the `spread_draws()` function). Print out the `head` of the new dataset.
+
+```{r exercise1e}
+
+posteriors <- 
+  model1 %>%
+  spread_draws(b_RT) %>%
+  select(b_RT) %>%
+  gather(key = "parameter", value = "posterior")
+
+head(posteriors)
+
+```
+
+(f) Plot the results with the `geom_halfeyeh() function. Add a vertical line at zero.
+
+```{r exercise1f}
+
+ggplot(posteriors, aes(x = posterior, y = parameter)) +
+    geom_halfeyeh(.width = 0.95) +
+    xlab("\nAUC") +
+    ylab("") +
+    #scale_x_continuous(limits = c(-100,600)) +
+    geom_segment(x = 0, xend = 0, y = Inf, yend = -Inf, lty = "dashed")
+
+```
+
+Now: What is the evidence telling us? Is there compelling evidence for a relationship between AUC and RT? Think about it.
+
+There is evidence for the relationship between AUC and RT, but it is weak at best. The value zero (no relationship) is contained in the 95% CrI and a non-trivial amount of posterior samples is larger than 0. 
+
+### HOMEWORK ###
+
+- If you need help, take a look at the suggested readings in the lecture, make use of the Forum, make use of the Forum, and also make use of the Forum.
+
+- Use this exercise Rmd-file, solve the exercises marked as homework (this section here) and save the file with your student number and name in the ‘author’ heading.
+
+- ‘Knit’ the document to produce a HTML file. If knitting fails, make use of the Forum ;)
+
+- Create a ZIP archive called “MATRIKELNR_Lastname_Firstname_ABDA_Week3.zip” containing: 
+- an R Markdown file “MATRIKELNR_Lastname_Firstname_ABDA_Week3.Rmd” and
+- a knitted HTML document “MATRIKELNR_Lastname_Firstname_ABDA_Week3.html”
+	
+- Upload the ZIP archive on Stud.IP in the homework folder before the deadline. You may upload as many times as you like before the deadline, only your final submission will count.
+
+
+## Exercise 2
+
+a) Create a new dataframe that contains only the mean values of the RT, and MAD for each animal (`exemplar`) and for correct and incorrect responses. Print out the `head` of the new dataframe.
+
+```{r exercise2a}
+
+dolphin_agg <- 
+  dolphin %>%
+  group_by(exemplar, correct) %>% 
+  dplyr::summarize(RT = mean(RT, na.rm = TRUE), MAD = mean(MAD, na.rm = TRUE)) 
+
+head(dolphin_agg)
+
+```
+
+(b) Run a linear regression using brms. `MAD` is the dependent variable (i.e. the measure) and both `RT` and `correct` are independent variables (`MAD ~ RT + correct`). Tip: the coefficients might be really really small, so make sure the output is printed with enought numbers after the comma.
+
+```{r exercise2b, cache = TRUE}
+
+model2 = brm(formula = MAD ~ RT + correct, data = dolphin_agg)
+print(summary(model2), digits = 5)
+
+```
+
+Try to understand the coefficient table. There is one coefficient for `RT` and one coefficient for `correct` which gives you the change in MAD from incorrect to correct responses.
+
+(c) Plot a scatter plot of MAD ~ RT and color code it for correct responses (Tip: Make sure that `correct` is treated as a factor and not a numeric vector). Draw two predicted lines into the scatterplot. One for correct responses ("lightblue") and one for incorrect responses ("orange").
+
+```{r exercise2c}
+
+intercept = summary(model2)$fixed[1]
+slope = summary(model2)$fixed[2]
+correct1 = summary(model2)$fixed[3]
+
+ggplot(data = dolphin_agg, aes(x = RT, y = MAD, color = factor(correct))) + 
+  geom_abline(aes(intercept = intercept + correct1, slope = slope), 
+              color = "lightblue", size  = 1.5) +
+  geom_abline(aes(intercept = intercept, slope = slope), color = "orange", size  = 1.5) +
+  geom_point(size = 3, alpha = 0.3) +
+  theme_aida() +
+  theme(legend.position="none")
+
+```
+
+(d) Extract the posteriors for the coefficients of both `RT` and `correct` from the model output (use the `spread_draws()` function), calculate their means and a 67% Credible Interval. Print out the `head` of the aggregated dataframe.
+
+```{r exercise2d}
+
+coef_summary <-
+  model2 %>%
+  spread_draws(b_RT, b_correct) %>%
+  select(b_RT, b_correct) %>% 
+  gather(key = "parameter", value = "posterior") %>% 
+  group_by(parameter) %>% 
+  summarise(`67lowerCrI` = HDInterval::hdi(posterior, credMass = 0.67)[1],
+            mean_posterior = mean(posterior),
+            `67higherCrI` = HDInterval::hdi(posterior, credMass = 0.67)[2])
+
+head(coef_summary)
+  
+```
+
+(e) BONUS I : Plot the scatterplot from 2c and plot 50 sample tuples for the regression lines for correct and incorrect responses.
+
+```{r exercise2e}
+
+get_variables(model2)
+
+random_50 <- sample(1:4000, 50, replace = FALSE)
+
+sample_tuples <- model2 %>%
+  spread_draws(b_RT, b_Intercept, b_correct) %>%
+  select(b_RT, b_Intercept, b_correct) %>% 
+  slice(random_50)
+
+ggplot(data = dolphin_agg, aes(x = RT, y = MAD, color = factor(correct))) + 
+  geom_point(size = 3, alpha = 0.3) +
+  geom_abline(data = sample_tuples, 
+              aes(intercept = b_Intercept + b_correct, slope = b_RT, color = "lightblue"),
+              size = 0.15, alpha = 0.3) +
+  geom_abline(data = sample_tuples, aes(intercept = b_Intercept, slope = b_RT, color = "orange"),
+              size = 0.15, alpha = 0.3) +
+  theme_aida() +
+  theme(legend.position="none")
+
+```
+
+(f) BONUS II: Given our model and our data, calculate the evidential ratio of correct responses exhibiting larger MADs than incorrect responses.
+
+```{r exercise2f}
+
+hypothesis(model2, hypothesis = "Intercept + RT + correct > Intercept + RT")
+
+```
+
+**Answer:** The hypothesis test suggests a posterior probability of 0.29 for the event that correct responses exhibit larger MADs than incorrect responses. This in turn results in an evidence ratio of ~ 0.4 (0.28 / (1-0.28)).

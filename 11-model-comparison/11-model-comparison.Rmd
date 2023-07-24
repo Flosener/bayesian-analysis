@@ -1,0 +1,625 @@
+---
+title: "ADA (week 12) Model comparison"
+author: "Florian Pätzold, 977687"
+date: "12/07/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    highlight: tango
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, cache = F, message = FALSE, warning = FALSE, error = FALSE, fig.width = 5, fig.align = "center")
+
+```
+
+```{r libraries, message = FALSE, warning = FALSE, include = FALSE}
+
+# package for convenience functions (e.g. ggplot2, dplyr, etc.)
+library(tidyverse)
+
+# package for Bayesian regression modeling
+library(brms)
+
+# package for visualization
+library(tidybayes)
+
+# package to visualize 
+library(bayesplot)
+
+# package to communicate with Stan
+library(rstan)
+
+# these options help Stan run faster
+options(mc.cores = parallel::detectCores())
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# and our dataset, let's call it dolphin
+dolphin <- aida::aidata
+
+# use the aida-theme for plotting
+theme_set(theme_aida())
+
+# global color scheme / non-optimized
+project_colors = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000")
+
+# setting theme colors globally
+scale_colour_discrete <- function(...) {
+  scale_colour_manual(..., values = project_colors)
+}
+scale_fill_discrete <- function(...) {
+   scale_fill_manual(..., values = project_colors)
+} 
+
+library(bridgesampling)
+
+```
+
+# Instructions
+
+- Use the file `12-exercises.Rmd`, solve the exercises marked as homework, and save the file with your student number and name.
+- ‘Knit’ the document to produce a HTML file.
+  - **include the other JS and CSS files that came with the ZIP file for this week in order to produce nicely looking Stan code in the HTML**
+- **include the Stan code you write in the Rmarkdown (see example in exercise 1 below), even if you also include a seperate file to run that model from**
+- Please do not suppress the code in the HTML-Output!
+  - **do suppress the output of Stan by including the flag `results = "hide"` in the r chunk calling the `stan`  function**
+- Create a ZIP archive called “MATRIKELNR_Lastname_Firstname_ABDA_Week12.zip” containing:
+  - an R Markdown file “MATRIKELNR_Lastname_Firstname_ABDA_Week12.Rmd”
+  - a knitted HTML document “MATRIKELNR_Lastname_Firstname_ABDA_Week12.html”
+  - **all of your Stan code files**
+  - **any pictures you add (of model graphs ...)**
+  - **the auxilliary JS and CSS files for syntax highlighting of Stan code**
+- Upload the ZIP archive on Stud.IP in the homework folder before the deadline. You may upload as many times as you like before the deadline, only your final submission will count.
+
+
+# Preliminaries
+
+We need the `bridgesampling` package. It is automatically loaded in this script but you might need to install it on your machine with:
+
+```{r eval = F}
+#install.packages('bridgesampling')
+```
+
+Note that you might run into trouble with the combination or Rmarkdown, caching and Stan. If you receive weird error messages, try deleting all cache files and try again. There might also be warnings (max tree depth) for some of your models. For the sake of practicality (but not if any serious decisions depended on these analyses), we may ignore those for one week.
+
+# <span style = "color:darkgreen">1 [WALKTRHOUGH]: Comparing models with LOO-CV and Bayes factors</span> 
+
+To get into the topic of model comparison we pick up and extend the example from Lambert's book (pages 392-398). Suppose that the ground truth is a robust regression model generating our data:
+
+```{r}
+set.seed(1969)
+
+# number of observations
+N <- 100
+# 100 samples from a standard normal
+x <- rnorm(N, 0, 1)
+
+intercept <- 2
+slope <- 4
+
+# robust regression with a Student's t error distribution
+# with 1 degree of freedom
+y <- rt(N, df = 1, ncp = slope * x + intercept)
+
+data_robust <- list(x = x, y = y, N = N)
+```
+
+A plot of the data shows that we have quite a few "outliers":
+
+```{r}
+qplot(x,y) + 
+  geom_smooth(color = project_colors[1], method = "lm") +
+  geom_point(color = project_colors[2], size = 2)
+```
+
+We are going to compare two models for this data, a normal regression model and a robust regression model.
+
+## Normal and robust regression models
+
+A normal regression model uses a normal error function. Here's Stan code for this (note that we need to use `target += ...` constructions instead of `~` in order not to suppress the normalizing constants; this is important for later bridge sampling):
+
+```{stan, output.var="Ex1", eval = F}
+data {
+  int<lower=0> N;
+  vector[N] x;
+  vector[N] y;
+}
+parameters {
+  real intercept;
+  real slope;
+  real<lower=0> sigma;
+}
+model {
+  target += student_t_lpdf(sigma | 1,10,5);
+  target += student_t_lpdf(intercept | 1, 0, 30);
+  target += student_t_lpdf(slope | 1, 0, 30);
+  target += normal_lpdf(y | intercept + slope * x, sigma);
+}
+generated quantities {
+  vector[N] log_lik;
+  for (i in 1:N) {
+    log_lik[i] = normal_lpdf(y[i] | intercept + slope * x[i], sigma);
+  }
+}
+```
+
+We run the model as usual:
+
+```{r, results="hide", cache = T}
+stan_fit_Ex1_normal_regression <- stan(
+  file = 'ADA-W12-Ex1-normal-regression.stan',
+  data = data_robust
+)
+```
+
+You might want to check how well/badly this normal regression model recovers the true parameters.
+
+```{r}
+stan_fit_Ex1_normal_regression
+
+# Answer: Bad prediction of the true underlying parameters.
+```
+
+We will want to compare this normal regression model with a robust regression model, using a Student's t distribution instead as the error function around the linear predictor:
+
+```{stan, output.var="Exb1robust", eval = F}
+data {
+  int<lower=0> N;
+  vector[N] x;
+  vector[N] y;
+}
+parameters {
+  real intercept;
+  real slope;
+  real<lower=0> sigma;
+  real<lower=0> nu;
+}
+model {
+  target += student_t_lpdf(sigma | 1,10,5);
+  target += student_t_lpdf(intercept | 1, 0, 30);
+  target += student_t_lpdf(slope | 1, 0, 30);
+  target += normal_lpdf(nu | 1, 5);
+  target += student_t_lpdf(y | nu, intercept + slope * x, sigma);
+}
+generated quantities {
+  vector[N] log_lik;
+  for (i in 1:N) {
+    log_lik[i] = student_t_lpdf(y[i] | nu, intercept + slope * x[i], sigma);
+  }
+}
+```
+
+```{r, results="hide", cache = T}
+stan_fit_Ex1_robust_regression <- stan(
+  file = 'ADA-W12-Ex1-robust-regression.stan',
+  data = data_robust
+)
+```
+
+You might want to look at how well/badly this model recovers the true parameters.
+
+```{r}
+stan_fit_Ex1_robust_regression
+
+# Answer: Good prediction of the true underlying parameters.
+```
+
+## Leave-one-out cross validation
+
+We can use the `loo` package to compare these two models based on their posterior predictive fit. Here's how:
+
+```{r}
+normal <- loo(stan_fit_Ex1_normal_regression)
+robust <- loo(stan_fit_Ex1_robust_regression)
+loo_comp <- loo_compare(list(normal = normal, robust = robust))
+loo_comp
+```
+
+We see that the robust regression model is better by ca. `r - round(loo_comp[2,1])` points of expected log predictive density. The table shown above is ordered with the "best" model on top. The column `elpd_diff` lists the difference in ELPD of every model to the "best" one. In our case, the estimated ELPD difference has a standard error of about `r round(loo_comp[2,2])`. Computing a $p$-value for this using Lambert's $z$-score method, we find that this difference is "significant" (for which we will use other terms like "noteworthy" or "substantial" in the following):
+
+```{r}
+1 - pnorm(-loo_comp[2,1], loo_comp[2,2])
+```
+
+We conclude from this that the robust regression model is much better at predicting the data (from a posterior point of view).
+
+## Bayes factor model comparison (with bridge sampling)
+
+We use bridge sampling, as implemented in the formidable `bridgesampling` pacakge, to estimate the (log) marginal likelihood of each model. (NOTE OF CAUTION: Strictly speaking we should use much more posterior samples to obtain reliable estimates from bridge sampling than we do here. The reason we don't is to speed up compilation time. It is justified in all cases considered here, because all Bayes factor comparison are very, very clear, so that issues of imprecise measurement are negligible.)
+
+```{r, eval = T}
+normal_bridge <- bridge_sampler(stan_fit_Ex1_normal_regression, silent = T)
+robust_bridge <- bridge_sampler(stan_fit_Ex1_robust_regression, silent = T)
+```
+
+We can then use the `bf` (Bayes factor) method from the `bridgesampling` package to get the Bayes factor (here: in favor of the robust regression model):
+
+```{r, eval = T}
+bridgesampling::bf(robust_bridge, normal_bridge)
+```
+
+As you can see, this is a very clear result. If we had equal levels of credence in both models, after seeing the data, our degree of belief in the robust regression model should be more than 100 times higer than our degree of belief in the normal model.
+
+# <span style = "color:firebrick">2 [HOMEWORK]:</span> Comparing LOO-CV and Bayes factors
+
+LOO-CV and Bayes factor gave similar results in the Walkthrough. The results are qualitatively the same: the (true) robust regression model is preferred over the (false) normal regression model. Both methods give quantitative results, too. But here only the Bayes factor results have a clear intuitive interpretation. In this exercise we will explore the main conceptual difference between LOO-CV and Bayes factors, which is:
+
++ LOO-CV compares models from a data-informed, *ex post* point of view based on a (repeatedly computed) **posterior predictive distribution**
++ Bayes factor model comparison takes a data-blind, *ex ante* point of view based on the **prior predictive distribution**
+
+What does that mean in practice? -- To see the crucial difference, imagine that you have tons of data, so much that they completely trump your prior. LOO-CV can use this data to emancipate itself from any wrong or too uninformative prior structure. Bayes factor comparison cannot. If a Bayesian model is a likelihood function AND a prior, Bayes factors give the genuine Bayesian comparison, taking the prior into account. That is what you want when your prior structure are really part of your theoretical commitment. If you are looking for prediction based on weak priors AND a ton of data to train on, you should not use Bayes factors.
+
+To see the influence of priors on model comparison, we are going to look at a very simple data set generated from a standard normal distribution.
+
+```{r}
+# number of observations
+N <- 100
+# data from a standard normal
+y <- rnorm(N)
+# list of data for Stan
+data_normal <- list(
+  y = y, N = N
+)
+```
+
+## 2.a Coding two models
+
+Use code from week 8 (if you want) to implement two models for inferring a Gaussian distribution. 
+
++ The first one has narrow priors for its parameters (`mu` and `sigma`), namely a Student's $t$ distribution with $\nu = 1$, $\mu = 0$ and $\sigma = 10$. 
++ The second one has wide priors for its parameters (`mu` and `sigma`), namely a Student's $t$ distribution with $\nu = 1$, $\mu = 0$ and $\sigma = 1000$. 
+
+Code these two models, using the `target += ...` syntax (to enable bridge sampling), and also output the variable `log_lik` (to enable LOO-CV). Name the model files `ADA-W12-Ex2-Gaussian-narrowPrior.stan` and `ADA-W12-Ex2-Gaussian-widePrior.stan`.
+
+**Solution:**
+
+```{stan, output.var="Ex2a_narrowPrior", eval = F}
+data {
+  int<lower=1> N;
+  vector[N] y;
+}
+parameters {
+  real mu;
+  real<lower=0> sigma;
+} 
+model {
+  target += student_t_lpdf(mu | 1,0,10);
+  target += student_t_lpdf(sigma | 1,0,10);
+  target += normal_lpdf(y | mu, sigma);
+}
+generated quantities {
+  vector[N] log_lik;
+    for (i in 1:N) {
+      log_lik[i] = normal_lpdf(y[i] | mu, sigma);
+  }
+}
+```
+
+```{stan, output.var="Ex2a_widePrior", eval = F}
+
+data {
+  int<lower=1> N ;
+  vector[N] y ;
+}
+parameters {
+  real mu;
+  real<lower=0> sigma;
+} 
+model {
+  target += student_t_lpdf(mu | 1,0,1000);
+  target += student_t_lpdf(sigma | 1,0,1000);
+  target += normal_lpdf(y | mu, sigma);
+}
+generated quantities {
+  vector[N] log_lik;
+    for (i in 1:N) {
+      log_lik[i] = normal_lpdf(y[i] | mu, sigma);
+  }
+}
+
+```
+
+## 2.b Running the models
+
+Run the models and save the outcome in variables called `stan_fit_Ex2_narrow` and `stan_fit_Ex2_wide`.
+
+**Solution:**
+
+```{r}
+stan_fit_Ex2_narrow <- stan(
+  file = "ADA-W12-Ex2-Gaussian-narrowPrior.stan",
+  data = data_normal
+)
+
+stan_fit_Ex2_wide <- stan(
+  file = "ADA-W12-Ex2-Gaussian-widePrior.stan",
+  data = data_normal
+)
+```
+
+## 2.c Compare models with LOO-CV
+
+Compare the models with LOO-CV, using the `loo` package.
+
+**Solution:**
+
+```{r}
+narrow <- loo(stan_fit_Ex2_narrow)
+wide <- loo(stan_fit_Ex2_wide)
+loo_comp <- loo_compare(list(narrow = narrow, wide = wide))
+loo_comp
+```
+
+## 2.d Compare models with Bayes factors
+
+Use the `bridgesampling` package to find an (approximate) Bayes factor for this model comparison.
+
+**Solution:**
+
+```{r}
+narrow_bridge <- bridge_sampler(stan_fit_Ex2_narrow, silent = T)
+wide_bridge <- bridge_sampler(stan_fit_Ex2_wide, silent = T)
+
+bridgesampling::bf(narrow_bridge, wide_bridge)
+```
+
+## 2.e Interpret the results
+
+If all went well, you should have seen a difference between the LOO-based and the BF-based model comparison. Explain what's going on in your own words.
+
+**Solution:**
+
+Since the leave-one-out method looks from a data-informed ex post point of view, there is no difference in models, since the posterior predictive distribution does not change much under the influence of weak priors.
+The BF-based model comparison on the other hand looks from a data-blind ex ante point of view, which is why the broader priors influence the second model's priors more heavily, resulting in a bad fit.
+
+Since BF-based comparison looks at the models from the prior point of view, the model with wide priors is less precise, puts prior weight on a lot of "bad" paramter values and so achieves a very weak prior predicitive fit. 
+
+The LOO-based estimates are identical because both models have rather flexible, not too strong priors, and so the data is able to produce roughly the same posteriors in both models.
+
+# <span style = "color:firebrick">3 [HOMEWORK]:</span> Comparing (hierarchical) regression models
+
+We are going to revisit an example from week 6 on the mouse-tracking data, where we used categorical variables `group` and `condition` to predict `MAD` measures. We are going to compare different models, including models which only differ with respect to random effects.
+
+Let's have a look at the data first to remind ourselves:
+
+```{r}
+
+# aggregate
+dolphin <- dolphin %>% 
+  filter(correct == 1) 
+
+# plotting the data
+ggplot(data = dolphin, 
+       aes(x = MAD, 
+           color = condition, fill = condition)) + 
+  geom_density(alpha = 0.3, size = 0, trim = F) +
+  facet_grid(~group) +
+  xlab("MAD")
+
+```
+
+## 3.a Run some regression models with `brms`
+
+Set up four regression models and run them via `brms`:
+
+1. Store in variable `model1_noInnteraction_FE` a regression with `MAD` as dependent variable, and as explanatory variables `group` and `condition` (but NOT the interaction between these two).
+2. Store in variable `model2_interaction_FE` a regression with `MAD` as dependent variable, and as explanatory variables `group`, `condition` and the interaction between these two.
+3. Store in variable `model3_interaction_RandSlopes` a model like `model2_interaction_FE` but also adding additionally random effects, namely random intercepts for factor `subject_id`.
+4. Store in `model4_interaction_MaxRE` a model like `model2_interaction_FE` but with the maximal random effects structure licensed by the design of the experiment.
+
+**Solution:**
+
+```{r}
+# Let's have a look at the data again.
+dolphin
+```
+
+```{r}
+model1_noInteraction_FE <- brm(
+  MAD ~ group + condition,
+  data = dolphin
+)
+```
+
+```{r}
+model2_interaction_FE <- brm(
+  MAD ~ group * condition,
+  data = dolphin
+)
+```
+
+```{r}
+# Why is the name "RandSlopes" if we are only supposed to add the by-subject intercept?
+model3_interaction_RandSlopes <- brm(
+  MAD ~ group * condition + (1 || subject_id),
+  data = dolphin
+)
+```
+
+```{r}
+model4_Interaction_MaxRE <- brm(
+  MAD ~ group * condition + (condition | subject_id) + (group | exemplar),
+  data = dolphin
+)
+```
+
+
+## 3.b Reasoning about models via posterior inference (Part 1)
+
+This exercise and the next (3.c) are meant to have you think more deeply about the relation (or unrelatedness) of posterior inference and model comparison. Remember that, conceptually, these are two really different things.
+
+To begin with, let's look at the summary of posterior estimates for model `model2_interaction_FE`:
+
+```{r}
+model2_interaction_FE
+```
+
+Based on these results, what would you expect: is the inclusion of the interaction term relevant for loo-based model comparison? In other words, do you think that `model2_interaction_FE` is better, equal or worse than `model1_noInteraction_FE` under loo-based model comparison? Explain your answer.
+
+**Solution:**
+
+Yes, the interaction term is relevant and model2 will be better than model1 since the data at hand is better captured if the interaction effect is added to our prediction.
+
+## 3.c Reasoning about models with LOO (Part 1)
+
+Now compare the models directly using `loo_compare`. Compute the $p$-value (following Lambert) and draw conclusion about which, if any, of the two models is notably favored by LOO model comparison.
+
+**Solution:**
+
+```{r}
+model1 <- loo(model1_noInteraction_FE)
+model2 <- loo(model2_interaction_FE)
+loo_comp <- loo_compare(list(noInteraction = model1, interaction = model2))
+loo_comp
+
+1 - pnorm(-loo_comp[2,1], loo_comp[2,2])
+```
+
+The interaction model (model 2) is notably favored by the LOO method and also the p value is very small, giving us confidence in our model.
+
+## 3.d Reasoning about models via posterior inference (Part 2)
+
+Now, let's also compare models that differ only in their random effects structure. We start by looking at the posterior summaries for `model4_interaction_MaxRE`.
+
+```{r}
+model4_Interaction_MaxRE
+```
+
+
+Just by looking at the estimated coefficients for the random effects (standard deviations), would you conclude that these variables are important (e.g., that the data provides support for these parameters to be non-negligible)?
+
+**Solutions:**
+
+Yes, they are important as the subject's responses differ in the intercepts for group and condtion as well as the slope for condition and the exemplars differ in intercepts for group and condition as well as the slope for group, licensed by the experiment's design.
+
+
+## 3.e Reasoning about models with LOO (Part 1)
+
+Compare the models `model3_interaction_RandSlopes` and `model4_interaction_MaxRE` with LOO-CV. Compute Lambert's $p$-value and draw conclusions about which, if any, of these models is to be preferred by LOO-CV. Also, comment on the results from 3.b through 3.e in comparison: are the results the same, comparable, different ... ; and why so?
+
+**Solution:**
+
+```{r}
+model3 <- loo(model3_interaction_RandSlopes)
+model4 <- loo(model4_Interaction_MaxRE)
+loo_comp <- loo_compare(list(interaction_RandSlopes = model3, interaction_MaxRE = model4))
+loo_comp
+
+1 - pnorm(-loo_comp[2,1], loo_comp[2,2])
+```
+
+The maximal random effects model (model 4) is notably favored by the LOO method and once again the p value is almost zero, giving us confidence in our model.
+The results are, yet slightly different, overall comparable as the confidence in favoring one model over another is almost the same. In comparison to Bayes factors, that hardly tell us how to decide how different such results really are, since there would be no explicit threshold that tells us when a model is to be favored substantially.
+
+## 3.f Compare all models by LOO-CV
+
+Compare all four models using LOO-CV with method `loo_compare` and interpret the outcome. Which model is, or which models are the best?
+
+**Solution:**
+
+```{r}
+loo_comp <- loo_compare(list(noInteraction = model1, 
+                             interaction = model2, 
+                             interaction_RandSlopes = model3, 
+                             interaction_MaxRE = model4))
+loo_comp
+```
+
+Models 3 and 4 are substantially favored over model 1 and 2. While model3 is already not bad, the maximum random effects model is still the best with around 13 points of expected log predictive density better than model 3 which we also already saw by comparing these two models with an additional p-value, fortifying our confidence in model 4 over all the others.
+
+# <span style = "color:darkorange">4 [BONUS]:</span> Comparing finite mixture models with varying group sizes
+
+In week 9 we talked about finite mixture models. A severe drawback of this approach, shared with many other unsupervised clustering techniques, is that we had to specify the desired number of classes/categories by hand at the outset. But now that we know how to compare models, we can run several mixture models, each with a different number $K$ of classes, and compare which one fits the data best.
+
+We look at the data from week 9 again, which was fabricated:
+
+```{r}
+data_flower_heights_4 <- list(
+  'y' = c(
+    rnorm(25, 10, 3),
+    rnorm(75, 25, 3),
+    rnorm(25, 40, 3),
+    rnorm(75, 65, 3)
+  ),
+  N = 200,
+  K = 4,
+  Dirichlet_prior = c(2,6,2,6)
+)
+```
+
+## 4.a Prepare the Stan code for action
+
+Here is Stan code for the generalized finite mixture model we used in week 9 (bonus exercise). Add a `generated quantities` block to this model, in which you compute the log density of each observation in a vector called `log_lik` (for later reuse with `loo`). Also, to use the bridge sampler, replace all statements using `~` with a `target += ...` statement.
+
+```{stan, output.var="Ex3-GMM", eval = F}
+data {
+  int<lower=1> K;            // number of mixture components
+  int<lower=1> N;            // number of data points
+  real y[N];                 // observations
+  vector[K] Dirichlet_prior; // priors on theta
+}
+parameters {
+  simplex[K] theta;          // mixing proportions
+  ordered[K] mu;             // locations of mixture components
+  vector<lower=0>[K] sigma;  // scales of mixture components
+}
+transformed parameters {
+  // make 'log_theta' available in 'generated quantities' block
+  vector[K] log_theta;
+  log_theta = log(theta);  // cache log calculation
+}
+model {
+  // prior
+  theta ~ dirichlet(Dirichlet_prior);
+  sigma ~ lognormal(3, 1);
+  mu ~ normal(35, 40);
+  // likelihood
+  for (n in 1:N) {
+    vector[K] lps = log_theta;
+    for (k in 1:K)
+      lps[k] += normal_lpdf(y[n] | mu[k], sigma[k]);
+    target += log_sum_exp(lps);
+  }
+}
+generated quantities {
+  // your code goes here
+}
+```
+
+**Solution:**
+
+...
+
+## 4.b Run models
+
+Run three models, one with $K=2$, one with $K=4$ and one with $K=6$. If necessary massage the inits to ensure convergence (like we did in week 9's exercise 4).
+
+**Solution:**
+...
+
+## 4.c Compare the models with LOO-CV
+
+Compare the models with `loo_compare`. If appropriate compute a $p$-value with Lambert's method. Which ordering of "goodness" does LOO-CV prescribe for these models?
+
+**Solution:**
+
+...
+
+## 4.d Comment on your results
+
+Is this result intuitive, given what you understand of LOO-CV? Do you think that this result could be used to argue for/against LOO-CV?
+
+**Solution:**
+
+...
+
+<link rel="stylesheet" href="hljs.css">
+<script src="stan.js"></script>
+<script>$('pre.stan code').each(function(i, block) {hljs.highlightBlock(block);});</script>
+
+

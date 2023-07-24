@@ -1,0 +1,254 @@
+---
+title: "Multilevel Generalized Linear Regression with brms (exercises)"
+author: "Florian Pätzold, 977687"
+date: "30/06/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r libraries, include=FALSE, message=FALSE, warning=FALSE}
+
+# package for convenience functions (e.g. ggplot2, dplyr, etc.)
+library(tidyverse)
+
+# package for Bayesian regression modeling
+library(brms)
+
+# package for visualization
+library(tidybayes)
+
+# package to visualize 
+library(bayesplot)
+
+# these options help Stan run faster
+options(mc.cores = parallel::detectCores())
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# and our dataset, let's call it dolphin
+dolphin <- aida::aidata
+
+# use the aida-theme for plotting
+theme_set(theme_aida())
+
+# global color scheme / non-optimized
+project_colors = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000")
+
+# setting theme colors globally
+scale_colour_discrete <- function(...) {
+  scale_colour_manual(..., values = project_colors)
+}
+scale_fill_discrete <- function(...) {
+   scale_fill_manual(..., values = project_colors)
+} 
+
+# define scale function to avoid matrix object in tibble
+my_scale <- function(x) c(scale(x))
+
+
+```
+
+## Exercises *HOMEWORK*
+
+- If you need help, take a look at the suggested readings in the lecture, make use of the Forum, make use of the Forum, and also make use of the Forum.  
+- Use this exercise Rmd-file, solve the exercises marked as homework (this section here) and save the file with your student number and name in the ‘author’ heading.  
+- ‘Knit’ the document to produce a HTML file. If knitting fails, make use of the Forum ;)  
+- **Please do not suppress the code in the HTML-Output!**  
+- Create a ZIP archive called “MATRIKELNR_Lastname_Firstname_ABDA_Week10.zip” containing:  
+  - an R Markdown file “MATRIKELNR_Lastname_Firstname_ABDA_Week10.Rmd” and  
+  - a knitted HTML document “MATRIKELNR_Lastname_Firstname_ABDA_Week10.html”  
+- Upload the ZIP archive on Stud.IP in the homework folder before the deadline. You may upload as many times as you like before the deadline, only your final submission will count.
+
+### (a) (10pts)
+
+Why is the random effect structure of the following model questionable? Can we meaningfully estimate all parameters? (Tip: Think about what group levels vary across predictor levels)
+
+```{r exercise1a}
+
+bf(MAD ~ condition + 
+     (condition || subject_id) +
+     (condition || exemplar))
+
+dolphin
+
+# Answer: In this mixed model we estimate the fixed effects predictor variable 'condition', as well as the random effects by-subject intercept and by-subject slope. Furthermore, we estimate the random effects by-exemplar intercept and by-exemplar slope. It is indeed meaningful to estimate the by-subject random effect parameters as it seems appropriate to act on the assumption that the intercepts and slopes of MAD responses per typical and atypical condition differ between participants ('within-subjects design'). It would also be reasonable to estimate the correlation of these two terms as this can highlight some important aspects of our data, if needed. It is also rightly approached to estimate the by-exemplar intercept of MAD values per condition but it does not seem very meaningful to also estimate the by-exemplar changes in MAD per condition (varying slopes), since we have different items per condition ('between-items design'), e.g. 'eel' will always be assigned to condition 'atypical' but never to condition 'typical'. That means that per exemplar there is no change in the slope of MAD values per condition.
+
+```
+
+### (b) (10 pts)
+
+Use the following data frame:
+
+```{r exercise1}
+
+# set up data frame
+dolphin_correct <- dolphin %>% 
+  filter(correct == 1) %>% 
+  mutate(log_RT_s = my_scale(log(RT)),
+         AUC_s = my_scale(AUC))
+
+```
+
+Run a multilevel model that predicts `AUC_s` based on `condition.` Specify maximal random effect structures for `exemplar`s and `subject_id`s (ignore correlations between intercepts and slopes for now). Specify a `seed = 98`. 
+
+If you encounter "divergent transition" warning, make them go away by refitting the model appropriately (Tip: Brms gives very useful, actionable advice)
+
+(This might take a couple of minutes, get used to it ;)
+
+```{r exercise1b, cache = TRUE, warnings = FALSE, messages = FALSE, results = 'hide'}
+
+mixed_effects_1 <- brm(AUC_s ~ condition +
+                       # by-exemplar intercept & slope, by-subject intercept & slope, both without correlation
+                       (condition || exemplar) +
+                       (condition || subject_id),
+                     data = dolphin_correct,
+                     seed = 98)
+
+```
+
+```{r}
+mixed_effects_1
+```
+
+
+### (c) (5 pts)
+You want to run a multilevel model that predicts `log_RT_s` based on `group`. You want to account for group-level variation of both `subject_id` and `exemplar`. What kind of groupings can be meaningfully estimated, given the dataset and the experimental design. You can check the crossing of different vectors with `xtabs()` for example.
+
+```{r exercise1c}
+
+# Answer: Since this model has a between-subjects (participants either contribute to the click or the touch group), within-items design (exemplars are in the click as well as in the touch group), it would be meaningful to estimate just the varying by-subject intercept parameter and furthermore estimate the by-exemplar random effect intercept and slope, as the reaction times can vary in the exemplars in both groups. One could also estimate the correlation between both latter random effect parameters.
+
+```
+
+### (d) (10 pts)
+
+Run a multilevel model that predicts `log_RT_s` based on `group` and add maximal random effect structures licensed by the experimental design (ignore possible random intercept-slope interactions for now).
+
+Specify weakly informative priors as you see fit. 
+
+```{r exercise1d, cache = TRUE, warnings = FALSE, messages = FALSE, results = 'hide'}
+
+priors <- c(
+  # prior for fixed effect group
+  set_prior("student_t(3, 0, 3)", class = "b"),
+  # prior for the Intercept
+  set_prior("student_t(3, 0, 3)", class = "Intercept"),
+  # prior for SDs
+  set_prior("student_t(3, 0, 3)", class = "sd")
+)
+
+mixed_effects_2 <- brm(log_RT_s ~ group +
+                         (1 | subject_id) + 
+                         (group || exemplar),
+                       data = dolphin_correct,
+                       # occurence of divergent iterations for 2000 iterations per chain
+                       iter = 3000,
+                       prior = priors)
+
+```
+
+```{r}
+mixed_effects_2
+```
+
+### (e) (5 pts)
+Extract the posterior means and 95% CrIs of touch vs. click `log_RT_s` and plot them.
+
+```{r exercise1e}
+
+predicted_values <- mixed_effects_2 %>%
+  spread_draws(b_Intercept, b_grouptouch) %>%
+  mutate(pred_click = b_Intercept,
+         pred_touch = b_Intercept + b_grouptouch) %>%
+  select(pred_click, pred_touch) %>% 
+  gather(key = "parameter", value = "posterior") %>%
+  mutate(group = ifelse(parameter == "pred_click", "click", "touch"))
+
+predicted_agg <- predicted_values %>% 
+  group_by(group) %>% 
+  summarise(mean_posterior = mean(posterior),
+            `95lowerCrI` = HDInterval::hdi(posterior, credMass = 0.95)[1],
+            `95higherCrI` = HDInterval::hdi(posterior, credMass = 0.95)[2])
+
+predicted_agg %>%
+  ggplot(aes(x = group, y = mean_posterior)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = `95lowerCrI`, ymax = `95higherCrI`), width = 0.2) +
+  ylab("log_RT_s")
+
+```
+
+
+### (f) (10 pts)
+Add the posterior estimates for different `exemplar`s to the plot. (Tip: Check the walkthrough for code to extract the random effect estimates)
+
+```{r exercise1f}
+
+# random matrices for random effects of exemplar
+exemplar_intercept_matrix <- ranef(mixed_effects_2)$exemplar[, , "Intercept"] %>% 
+  round(digits = 2)
+exemplar_slope_matrix <- ranef(mixed_effects_2)$exemplar[, , "grouptouch"] %>% 
+  round(digits = 2)
+
+# data frames for random effects of exemplar (intercept and slope)
+exemplar_intercept_df <- data.frame(exemplar = row.names(exemplar_intercept_matrix), exemplar_intercept_matrix) %>% 
+  select(exemplar, Estimate) %>% 
+  rename(exemplar_intercept = Estimate)
+
+exemplar_slope_df <- data.frame(exemplar = row.names(exemplar_slope_matrix), exemplar_slope_matrix) %>% 
+  select(exemplar, Estimate) %>% 
+  rename(exemplar_slope = Estimate) %>% 
+  full_join(exemplar_intercept_df) %>%
+  # adjust intercept and slope with random effects of the exemplars
+  mutate(Intercept = round(fixef(mixed_effects_2)[1,1],2),
+         Slope = round(fixef(mixed_effects_2)[2,1],2),
+         adjusted_intercept = Intercept + exemplar_intercept,
+         adjusted_slope = Slope + exemplar_slope) %>%
+  # new predictions for click and touch group
+  mutate(click_pred = adjusted_intercept,
+         touch_pred = adjusted_intercept + adjusted_slope) %>% 
+  select(exemplar, click_pred, touch_pred) %>% 
+  pivot_longer(c(2,3), names_to = "group", values_to = "pred") %>%
+  mutate(group = ifelse(group == "click_pred", "click", "touch"))
+
+# plot mixed effects
+predicted_agg %>%
+  ggplot(aes(x = group, y = mean_posterior)) +
+  geom_point(size = 4) +
+  geom_point(data = exemplar_slope_df, aes(x = group, y = pred), size=2, alpha=0.2) +
+  geom_errorbar(aes(ymin = `95lowerCrI`, ymax = `95higherCrI`), width = 0.2) +
+  ylab("log_RT_s")
+  
+```
+
+### Bonus (a)
+
+Run a multilevel poisson regression predicting `xpos_flips` based on `group`, `log_RT_s`, and their two-way interaction. Specify maximal random effect structures for `exemplar`s and `subject_id`s licensed by the design (ignore correlations between intercepts and slopes for now) (Tip: allow groupings to differ regarding the interaction effect if licensed by the design)
+
+Specify weakly informative priors.
+
+```{r exercise_Bonus_1, cache = TRUE, warnings = FALSE, messages = FALSE, results = 'hide'}
+
+
+```
+
+Extract and plot the population level estimates for both click and touch group as a regression line into a scatter plot (x = b_log_RT_s, y = xpos_flips). 
+
+```{r exercise_Bonus_2}
+
+
+```
+
+Extract the respective subject-specific estimates from the model and plot them into the same plot (maybe use thinner lines). 
+
+```{r exercise_Bonus_3, message = FALSE}
+
+
+```
+

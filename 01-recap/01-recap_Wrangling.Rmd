@@ -1,0 +1,154 @@
+---
+title: "Data Wrangling using dplyr"
+author: "Florian Pätzold, 977687"
+output: rmarkdown::github_document
+---
+
+```{r echo=F}
+knitr::opts_chunk$set(
+  warning = FALSE, # supress warnings per default 
+  message = FALSE  # supress messages per default 
+)
+```
+
+```{r preprocessing, echo=F}
+
+## Preprocessing
+
+# let's load in the libraries we need for the following session. 
+library(tidyverse)
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# and our dataset, let's call it dolphin
+dolphin <- aida::aidata
+
+```
+
+## Exercises
+### Exercise 1
+
+(a) Take the dolphin data set and store a reduced variant of it as `dolphin_reduced`. The new data frame should contain only the following columns: `RT`, `AUC`, `group`, and `exemplar`
+
+```{r x1a}
+dolphin_reduced <- 
+  dolphin %>% 
+  dplyr::select(RT, AUC, group, exemplar)
+
+head(dolphin_reduced)
+```
+
+(b) We are for now only interested in those data that have whales as the exemplar. `filter()` only those rows and store them in a new dataframe called `whales_only`.
+
+```{r x1b}
+whales_only <- 
+  dolphin_reduced %>% 
+  filter(exemplar == "whale")
+
+head(whales_only)
+```
+
+(c) Now filter for only those data that have RTs below 1500ms.
+
+```{r x1c}
+whales_maxRT <- 
+  whales_only %>% 
+  filter(RT < 1500)
+
+head(whales_maxRT)
+```
+
+(d) We don't like that `AUC` is unstandardized. Use `mutate()` to create a new vector that represents scaled AUC values (scaling is achieved by the function `scale()`).
+
+```{r x1d}
+whales_standardized <- whales_maxRT %>% 
+  mutate(AUC_scaled = as.numeric(scale(AUC)))
+
+head(whales_standardized)
+```
+
+(e) Calculate the mean scaled AUC ratings for both both groups.
+
+```{r x1e}
+whales_standardized <- 
+  whales_standardized %>% 
+  group_by(group) %>% 
+  summarize(mean_AUC = mean(AUC_scaled))
+
+head(whales_standardized)
+```
+
+(f) Do all of the above (a-e) in one pipeline.
+
+```{r x1f}
+AUC_per_group <-
+  dolphin %>%
+  dplyr::select(RT, AUC, group, exemplar) %>%
+  filter(exemplar == "whale", RT < 1500) %>% 
+  mutate(AUC_scaled = as.numeric(scale(AUC))) %>% 
+  group_by(group) %>% 
+  summarize(mean_AUC = mean(AUC_scaled))
+
+AUC_per_group
+```
+
+
+## HOMEWORK
+### please upload your solutions to studIP as an .Rmd file
+
+### Exercise 2 
+
+(a) Take the dolphin data set and store a reduced variant of it. The new data frame should contain only the columns `condition`, `group`, and `xpos_flips`, `correct`. And within the `correct` vector, we are only interested in the correct trials (= 1). Filter accordingly.
+
+```{r x2a}
+dolphin_reduced <- 
+  dolphin %>%
+  dplyr::select(condition, group, xpos_flips, correct) %>% 
+  filter(correct == 1)
+
+head(dolphin_reduced)
+```
+
+(b) Create an aggregated data frame that contains the mean `xpos_flips` value and the standard deviation for `group` and `condition`.
+
+```{r x2b}
+dolphin_aggregated <-
+  dolphin_reduced %>% 
+  group_by(group, condition) %>% 
+  summarize(mean_xpos_flips = mean(xpos_flips),
+            sd_xpos_flips = sd(xpos_flips))
+
+head(dolphin_aggregated)
+```
+
+(c) Rename the new vectors for the mean xflips and their sd to `xflips_mean` and `xflips_sd`
+
+```{r x2c}
+dolphin_aggregated <- 
+  dolphin_aggregated %>% 
+  rename(xflips_mean = mean_xpos_flips,
+         xflips_sd = sd_xpos_flips)
+
+head(dolphin_aggregated)
+```
+
+(d) Do all of the above (a-c) in one pipeline.
+
+```{r 2xd}
+dolphin_cleaned <-
+  dolphin %>% 
+  dplyr::select(condition, group, xpos_flips, correct) %>% 
+  filter(correct == 1) %>% 
+  group_by(group, condition) %>%
+  # Note, that I rename the columns already in the 
+  # summarize function in order to reduce redundancy.
+  summarize(xflips_mean = mean(xpos_flips),
+            xflips_sd = sd(xpos_flips))
+
+head(dolphin_cleaned)
+```
+
+
+
+

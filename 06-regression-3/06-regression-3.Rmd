@@ -1,0 +1,331 @@
+---
+title: "EVEN more linear Regression with brms (Exercise)"
+author: "Florian Pätzold, 977687"
+date: "06/03/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r libraries, include=FALSE, message=FALSE, warning=FALSE}
+
+# package for convenience functions (e.g. ggplot2, dplyr, etc.)
+library(tidyverse)
+
+# package for Bayesian regression modeling
+library(brms)
+
+# package for visualization
+library(tidybayes)
+
+# package to visualize 
+library(bayesplot)
+
+# these options help Stan run faster
+options(mc.cores = parallel::detectCores())
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# and our dataset, let's call it dolphin
+dolphin <- aida::aidata
+
+# use the aida-theme for plotting
+theme_set(theme_aida())
+
+# global color scheme / non-optimized
+project_colors = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000")
+
+# setting theme colors globally
+scale_colour_discrete <- function(...) {
+  scale_colour_manual(..., values = project_colors)
+}
+scale_fill_discrete <- function(...) {
+   scale_fill_manual(..., values = project_colors)
+} 
+
+```
+
+## Exercises
+
+### Exercise 1
+
+I prepared an aggregated data frame `dolphin_agg` for you. 
+
+```{r exercise1}
+
+# aggregate
+dolphin_agg <- dolphin %>% 
+  group_by(group, exemplar) %>% 
+  dplyr::summarize(MAD = median(MAD, na.rm = TRUE),
+                   RT = median(RT, na.rm = TRUE)) %>% 
+  mutate(log_RT = log(RT))
+
+```
+
+### (a) 
+Standardize ("z-transform") `log_RT` such that the mean is at zero and 1 unit corresponds to the standard deviation. Name it `log_RT_s`.
+
+```{r exercise1a}
+
+dolphin_agg$log_RT_s <- scale(dolphin_agg$log_RT, scale = TRUE)
+
+```
+
+### (b) 
+Run a linear model with `brms` that predicts `MAD` based on `log_RT_s`, `group`, and their two-way interaction. Run 2000 iterations and 6 chains.
+
+```{r exercise1b, cache=TRUE, warning=FALSE, message=FALSE}
+
+model1 <- brm(
+  MAD ~ log_RT_s * group,
+  data = dolphin_agg,
+  iter = 2000,
+  chains = 6
+)
+
+```
+
+### (c) 
+Plot `MAD` (y) against `log_RT_s` (x) in a scatter plot and color-code for `group`. Plot the regression lines for the click and the touch group into the plot and don't forget to take possible interactions into account. 
+
+```{r exercise1c}
+
+summary(model1)
+
+Intercept = summary(model1)$fixed[1]
+log_RT_s = summary(model1)$fixed[2]
+Grouptouch = summary(model1)$fixed[3]
+Interaction = summary(model1)$fixed[4]
+
+dolphin_agg %>% 
+  ggplot(aes(x = log_RT_s, y = MAD, color = group)) +
+  geom_point(size = 3, alpha = 0.5) +
+  geom_abline(intercept = Intercept, slope = log_RT_s, color = "orange", size = 2) +
+  geom_abline(intercept = Intercept + Grouptouch, slope = log_RT_s + Interaction, 
+              color = "lightblue", size = 2)
+
+```
+
+### (d)
+Specify very skeptic priors for all three coefficients. Use a normal distribution with mean = 0, and sd = 10. Rerun the model with those priors.
+
+```{r exercise1d, cache=TRUE}
+
+priors_model2_strict <- c(set_prior("normal(0,10)", class = "b"))
+
+model2 <- brm(
+  MAD ~ log_RT_s * group,
+  data = dolphin_agg,
+  iter = 2000,
+  chains = 6,
+  prior = priors_model2_strict
+)
+
+```
+
+### (e) 
+Compare the model output of model1 to model2. What are the differences and what are the reasons for these differences?
+
+```{r exercise1e}
+
+summary(model1)
+summary(model2)
+
+# The priors for model1's predictors are by default flat priors which means that the model assumes all parameter values for the coefficients equally likely, thus our posterior estimates are overall greater than in model2, where our strict prior belief "dominates" the posterior, i.e. drags the posterior estimates of our coefficients closer to the mean of our prior normal distribution, namely 0.
+
+```
+
+## Exercise 2 *HOMEWORK*
+
+- If you need help, take a look at the suggested readings in the lecture, make use of the Forum, make use of the Forum, and also make use of the Forum.  
+- Use this exercise Rmd-file, solve the exercises marked as homework (this section here) and save the file with your student number and name in the ‘author’ heading.  
+- ‘Knit’ the document to produce a HTML file. If knitting fails, make use of the Forum ;)  
+- **Please do not suppress the code in the HTML-Output!**  
+- Create a ZIP archive called “MATRIKELNR_Lastname_Firstname_ABDA_Week3.zip” containing:  
+  - an R Markdown file “MATRIKELNR_Lastname_Firstname_ABDA_Week3.Rmd” and  
+  - a knitted HTML document “MATRIKELNR_Lastname_Firstname_ABDA_Week3.html”  
+- Upload the ZIP archive on Stud.IP in the homework folder before the deadline. You may upload as many times as you like before the deadline, only your final submission will count.
+
+I prepared an aggregated data frame `dolphin_agg2` for you. 
+
+```{r exercise2}
+
+# aggregate
+dolphin_agg2 <- dolphin %>% 
+  filter(correct == 1) %>% 
+  group_by(exemplar, group, condition) %>% 
+  dplyr::summarize(MAD = median(MAD, na.rm = TRUE),
+                   RT = median(RT, na.rm = TRUE)) %>% 
+  mutate(log_RT = log(RT))
+
+dolphin_agg2
+
+```
+
+### (a) (10pts)
+
+Run a model predicting MAD based on *standardized* `log_RT`, `group`, `condition`, and *their three-way interaction*. Set a seed = 999.
+
+```{r exercise2a, cache=TRUE, message=FALSE, warning=FALSE}
+
+dolphin_agg2$log_RT_s <- scale(dolphin_agg2$log_RT, scale = TRUE)
+
+model3 <- brm(
+  MAD ~ log_RT_s * group * condition,
+  data = dolphin_agg2,
+  seed = 999
+)
+
+```
+
+### (b) (20 pts)
+
+Look at the output. Extract posterior means and 95% CrIs for the following predictor level combinations. One row corresponds to one concrete combination of levels. (Tip: check your results by plotting them against the data)
+
+- Combination1: log_RT_s == 0; group == click; condition == Atypical
+- Combination2: log_RT_s == 0; group == touch; condition == Atypical
+- Combination3: log_RT_s == 1; group == touch; condition == Typical
+- Combination4: log_RT_s == 2; group == touch; condition == Atypical
+
+```{r exercise2b}
+
+summary(model3)
+
+posteriors3 <- model3 %>% 
+  spread_draws(b_Intercept, b_log_RT_s, b_grouptouch, b_conditionTypical,
+               `b_log_RT_s:grouptouch`, `b_log_RT_s:conditionTypical`,
+               `b_grouptouch:conditionTypical`, `b_log_RT_s:grouptouch:conditionTypical`) %>% 
+  mutate(Combination1 = b_Intercept,
+         Combination2 = b_Intercept + b_grouptouch + `b_log_RT_s:grouptouch`,
+         Combination3 = b_Intercept + b_grouptouch + b_conditionTypical + 
+           b_log_RT_s + `b_log_RT_s:grouptouch` + `b_log_RT_s:conditionTypical` +
+           `b_grouptouch:conditionTypical` + `b_log_RT_s:grouptouch:conditionTypical`,
+         Combination4 = b_Intercept + b_grouptouch + b_log_RT_s + b_log_RT_s +
+           `b_log_RT_s:grouptouch`) %>% 
+  select(Combination1, Combination2, Combination3, Combination4) %>% 
+  gather(key = "parameter", value = "posterior") %>% 
+  mutate(group = ifelse(parameter == "Combination1", "click", "touch"),
+         condition = ifelse(parameter == "Combination3", "Typical", "Atypical"),
+         log_RT_s = ifelse(parameter == "Combination1" | parameter == "Combination2", 0,
+                           ifelse(parameter == "Combination3", 1, 2)))
+
+posteriors_agg3 <- posteriors3 %>% 
+  group_by(group, condition, log_RT_s) %>% 
+  summarise(mean_posterior = mean(posterior),
+            `95lowerCrI` = HDInterval::hdi(posterior, credMass = 0.95)[1],
+            `95higherCrI` = HDInterval::hdi(posterior, credMass = 0.95)[2])
+
+# Let's plot the posterior means against the data to check if they are representative of our data.
+posteriors_agg3 %>% 
+  ggplot(aes(x = log_RT_s, y = mean_posterior, color = group, fill = group)) +
+  geom_errorbar(aes(x = log_RT_s, ymin = `95lowerCrI`, ymax = `95higherCrI`), width = 0.2, 
+                position = position_dodge(0.4)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  geom_point(data = dolphin_agg2, aes(x = log_RT_s, y = MAD), alpha = 0.3, size = 2) +
+  facet_grid(~ condition)
+
+```
+
+### (c) (14 pts)
+
+Define the following priors and run the model3 again:
+
+- log_RT_s: student-t (df = 3, mean = 0, sd = 30)
+- grouptouch: student-t (df = 3, mean = 100, sd = 200)
+- conditionTypical: student-t (df = 3, mean = 0, sd = 200)
+- log_RT_s:grouptouch: normal (mean = 0, sd = 30)
+- log_RT_s:conditionTypical: normal (mean = 0, sd = 30)
+- grouptouch:conditionTypical:  student-t (df = 3, mean = 0, sd = 200)
+- log_RT_s:grouptouch:conditionTypical: student-t (df = 3, mean = 0, sd = 30)
+
+```{r exercise2c, cache=TRUE, message=FALSE, warning=FALSE}
+
+priors_model3b <- c(
+  set_prior("student_t(3,0,30)", class = "b", coef = "log_RT_s"),
+  set_prior("student_t(3,100,200)", class = "b", coef = "grouptouch"),
+  set_prior("student_t(3,0,200)", class = "b", coef = "conditionTypical"),
+  set_prior("normal(0,30)", class = "b", coef = "log_RT_s:grouptouch"),
+  set_prior("normal(0,30)", class = "b", coef = "log_RT_s:conditionTypical"),
+  set_prior("student_t(3,0,200)", class = "b", coef = "grouptouch:conditionTypical"),
+  set_prior("student_t(3,0,30)", class = "b", coef = "log_RT_s:grouptouch:conditionTypical")
+)
+
+model3b <- brm(
+  MAD ~ log_RT_s * group * condition,
+  data = dolphin_agg2,
+  prior = priors_model3b
+)
+
+```
+
+### (d) (15 pts)
+
+Compare the two posterior estimates from model3 and model3b. What has changed?
+
+```{r exercise2d}
+
+summary(model3)
+summary(model3b)
+
+# The priors for model3's predictors are by default flat priors which means that the model assumes all parameter values for the coefficients equally likely, thus our posterior estimates are slightly adjusted in model3b, where our specific priors update the posterior accordingly. For example, our posterior estimate for every standardised step in AUC ("log_RT_s") is slightly smaller than before because of our prior student-t distribution with mean 0.
+
+```
+
+### BONUS (e) 
+
+Suppose you have the following aggregated data set and want to run the following linear model: `AUC ~ condition`
+
+```{r exercise2e, cache=TRUE}
+
+# aggregate
+dolphin_agg3 <- dolphin %>% 
+  filter(correct == 1) %>% 
+  group_by(subject_id, condition) %>%
+  dplyr::summarize(AUC = median(AUC, na.rm = TRUE)) 
+
+dolphin_agg3$AUC_s <- scale(dolphin_agg3$AUC, scale = TRUE)
+
+```
+
+Deviation code the effect of condition, such that the Intercept gives you the grand average of `AUC_s` and the coefficient for condition gives you the difference between Atypical + Typical exemplars. Check last week's reading of Bodo Winter's book again (or google).
+
+Specify an agnostic prior for the effect of condition and run the model from above (set `seed = 333`).
+
+```{r exercise2e_model}
+
+```
+
+### BONUS (f) 
+
+Now suppose you have three people who want to encode their subjective beliefs about whether and how group and condition affect `AUC_s`. To keep your solutions comparable, we assume prior beliefs are normally distributed and there are three types of beliefs:
+
+1. A strong belief in a directional relationship: The person assumes that there is a difference between two conditions (A>B). The mean of the assumed differences is 3 units of AUC_s with a SD of 0.5.
+
+2. An agnostic belief in a directional relationship: Both A>B and B>A are plausible, but uncertainty is high. The mean of the most plausible distribution is 0 with a SD of 3, i.e. a rather wide distribution, allowing effects in both directions.
+
+Here are three researchers and their prior beliefs:
+
+*Michael* holds strong prior beliefs that Typical exemplars exhibit less curvature than Atypical exemplars. 
+
+*Nina* is agnostic about the effect of condition on `AUC_s`. 
+
+As opposed to Michael, *Jones* holds strong prior beliefs that Typical exemplars exhibit MORE curvature than Atypical exemplars. 
+
+Specify priors for Michael, Nina, and Jones, and run models (set seed = 323) for all of these scenarios. Look at the results (maybe plot the posteriors if that helps you) and briefly describe how the priors affected the posteriors. 
+
+```{r exercise2f_priors}
+
+```
+
+
+```{r exercise2f_answer}
+
+#YOUR ANSWER
+
+```
+

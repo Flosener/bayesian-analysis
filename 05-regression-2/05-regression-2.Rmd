@@ -1,0 +1,356 @@
+---
+title: "More linear Regression with brms (Exercise)"
+author: "Florian Pätzold, 977687"
+date: "05/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r libraries, message = FALSE, warning = FALSE, include = FALSE}
+
+# package for convenience functions (e.g. ggplot2, dplyr, etc.)
+library(tidyverse)
+
+# package for Bayesian regression modeling
+library(brms)
+
+# package for visualization
+library(tidybayes)
+
+# package to visualize 
+library(bayesplot)
+
+# these options help Stan run faster
+options(mc.cores = parallel::detectCores())
+
+#devtools::install_github("michael-franke/aida-package")
+library(aida)
+
+# and our dataset, let's call it dolphin
+dolphin <- aida::aidata
+
+# use the aida-theme for plotting
+theme_set(theme_aida())
+
+# global color scheme / non-optimized
+project_colors = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#000000")
+
+# setting theme colors globally
+scale_colour_discrete <- function(...) {
+  scale_colour_manual(..., values = project_colors)
+}
+scale_fill_discrete <- function(...) {
+   scale_fill_manual(..., values = project_colors)
+} 
+
+```
+
+## Exercises
+
+### Exercise 1
+
+(a) use the dolphin data set, filter for correct responses only, group by `exemplar`, `condition`, and `group` and aggregate the median AUC values. Store this dataframe and print out its head.
+
+```{r exercise1a}
+
+dolphin_agg <- dolphin %>% 
+  filter(correct == 1) %>% 
+  group_by(exemplar, condition, group) %>% 
+  summarize(AUC = mean(AUC))
+
+```
+
+(b) Run a linear model with `brm` with the dependent variable `AUC` and the independent variables `group` and `condition`. Run 4 chains, and 2000 iteration per chain.
+
+```{r exercise1b}
+# model's default are 4 chains with 2000 iters each
+model1 = brm(AUC ~ group + condition, dolphin_agg)
+
+# inspect model's coefficients
+model1
+
+```
+
+(c) Compare the posteriors for the four groups (touch vs. click x atypical vs. typical) to the actual data. Is the form of the posterior distribution accurately reflecting the distribution of the data?
+
+```{r exercise1c}
+
+posteriors1 <- model1 %>%
+  spread_draws(b_Intercept, 
+               b_conditionTypical,
+               b_grouptouch) %>%
+  # calculate posteriors for each individual level
+  mutate(Atypical_click = b_Intercept,
+         Typical_click = b_Intercept + b_conditionTypical,
+         Atypical_touch = b_Intercept + b_grouptouch,
+         Typical_touch = b_Intercept + b_conditionTypical + b_grouptouch) %>% 
+  select(Atypical_click, Typical_click, Atypical_touch, Typical_touch) %>% 
+  gather(key = "parameter", value = "posterior") %>% 
+   mutate(group = ifelse(parameter == "Atypical_click" 
+                         | parameter == "Typical_click", "click", "touch"),
+         condition = ifelse(parameter == "Atypical_click" 
+                            | parameter == "Atypical_touch", "Atypical", "Typical"))
+
+ggplot(data = posteriors1, 
+       aes(x = posterior, color = condition, fill = condition), alpha = 0.3) +
+  geom_density() +
+  geom_density(data = dolphin_agg, 
+               aes(x = AUC, y =  -..density.., color = condition, fill = condition), 
+               alpha = 0.3, size = 0) +
+  xlab("AUC values") +
+  facet_grid(~ group)
+
+```
+
+```{r exercise1c answer}
+
+# No, since our posterior distribution does not seem to fit the normality assumption - this is, the data rather follows a normal distribution.
+
+```
+
+(d) ignore these distributional violation for now. Run the model with an interaction term for `condition` x `group` and plot the posteriors as densities.
+
+```{r exercise1d_model, cache = TRUE}
+
+model2 = brm(
+  AUC ~ condition * group,
+  data = dolphin_agg
+)
+
+```
+
+```{r exercise1d_plot}
+
+posteriors2 <- model2 %>%
+  spread_draws(b_Intercept,
+               b_conditionTypical,
+               b_grouptouch,
+               `b_conditionTypical:grouptouch`) %>%
+  mutate(Atypical_click = b_Intercept,
+         Typical_click = b_Intercept + b_conditionTypical,
+         Atypical_touch = b_Intercept + b_grouptouch,
+         Typical_touch = b_Intercept + b_conditionTypical + b_grouptouch +
+           `b_conditionTypical:grouptouch`) %>%
+  select(Atypical_click, Typical_click, Atypical_touch, Typical_touch) %>%
+  gather(key = "parameter", value = "posterior") %>%
+   mutate(group = ifelse(parameter == "Atypical_click" 
+                         | parameter == "Typical_click", "click", "touch"),
+         condition = ifelse(parameter == "Atypical_click" 
+                            | parameter == "Atypical_touch", "Atypical", "Typical"))
+
+ggplot(data = posteriors2, aes(x = posterior, color = condition, fill = condition)) +
+  geom_density(alpha = 0.3) +
+  facet_grid(~ group)
+
+ggplot(data = posteriors1, aes(x = posterior, color = condition, fill = condition)) +
+  geom_density(alpha = 0.3) +
+  facet_grid(~ group)
+
+model1
+model2
+
+```
+
+(e) If you compare the posteriors of model 1 (1b) and model 2 (1d), what is the difference?
+
+```{r}
+
+# The coefficient for atypical examples in the click condition is greater in model 2, because the interaction term adjusts the posterior estimate to fit the data better. Consequently, the other coefficients are influenced, in that they get smaller.
+
+```
+
+## Exercise 2 *HOMEWORK*
+
+- If you need help, take a look at the suggested readings in the lecture, make use of the Forum, make use of the Forum, and also make use of the Forum.  
+- Use this exercise Rmd-file, solve the exercises marked as homework (this section here) and save the file with your student number and name in the ‘author’ heading.  
+- ‘Knit’ the document to produce a HTML file. If knitting fails, make use of the Forum ;)  
+- **Please do not suppress the code in the HTML-Output!**  
+- Create a ZIP archive called “MATRIKELNR_Lastname_Firstname_ABDA_Week3.zip” containing:  
+  - an R Markdown file “MATRIKELNR_Lastname_Firstname_ABDA_Week3.Rmd” and  
+  - a knitted HTML document “MATRIKELNR_Lastname_Firstname_ABDA_Week6.html”  
+- Upload the ZIP archive on Stud.IP in the homework folder before the deadline. You may upload as many times as you like before the deadline, only your final submission will count.
+
+
+I prepared an aggregated data frame `dolphin_agg2` for you. 
+
+```{r exercise2, cache = TRUE}
+
+# make correct a factor
+dolphin$correct <- as.factor(dolphin$correct)
+
+# aggregate
+dolphin_agg2 <- dolphin %>% 
+  group_by(exemplar, group, condition, correct) %>% 
+  dplyr::summarize(MAD = median(MAD, na.rm = TRUE)) 
+
+dolphin_agg2
+```
+
+(a) Plot the data (for all combinations of `group`, `condition`, and `correct`) as a point plot. Use `facet_grid` and dodged positions to separate the categories.
+
+```{r exercise2a}
+
+dolphin_agg2 %>%
+  ggplot(aes(x = condition, y = MAD, color = condition, fill = condition)) +
+  geom_point(position = position_dodge(width = 1)) +
+  facet_grid(~ group + correct)
+
+```
+
+(b) Run a linear model with `brm` with the dependent variable `MAD` and the independent variables `group`, `condition`, `correct` and an 2-way interaction term for `group x condition`. Run 4 chains, and 2000 iteration per chain. Use `seed = 991`. 
+
+
+```{r exercise2b, cache = TRUE}
+
+model3 = brm(
+  formula = MAD ~ group + condition + correct + group:condition, 
+  data = dolphin_agg2,
+  seed = 991,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000)
+
+```
+
+(c) Interpret the output by looking at the coefficients. What does the Intercept concretely represent? 
+
+```{r exercise2c}
+model3
+
+# The Intercept represents the posterior mean of incorrect answers for atypical examples in the click condition. Now the grouptouch coefficient is the change from our reference level (intercept) to the touch condition (about 31 less), conditionTypical gives us the change from our intercept to typical examples (about 110), correct1 the change from intercept to correct responses (about 96 less) and the interaction term gives us the change from incorrect answers for atypical examples in the click condition to incorrect answers for typical examples in the touch condition (about -132).
+```
+
+(d) Extract the posterior means and their 95% CrIs for all combination of predictors (correct x condition x group) and plot them as a point plot with the 95% CrIs as error bars.
+
+```{r exercise2d}
+
+posteriors3 <- model3 %>% 
+  spread_draws(b_Intercept,
+               b_grouptouch,
+               b_conditionTypical,
+               b_correct1,
+               `b_grouptouch:conditionTypical`) %>%
+  mutate(Click_Atypical_0 = b_Intercept,
+         Click_Typical_0 = b_Intercept + b_conditionTypical,
+         Click_Atypical_1 = b_Intercept + b_correct1,
+         Click_Typical_1  = b_Intercept + b_conditionTypical + b_correct1,
+         Touch_Atypical_0 = b_Intercept + b_grouptouch,
+         Touch_Typical_0 = b_Intercept + b_grouptouch + b_conditionTypical +
+           `b_grouptouch:conditionTypical`,
+         Touch_Atypical_1 = b_Intercept + b_grouptouch + b_correct1,
+         Touch_Typical_1 = b_Intercept + b_grouptouch + b_conditionTypical + b_correct1 +
+           `b_grouptouch:conditionTypical`) %>% 
+  select(Click_Atypical_0, Click_Typical_0, Click_Atypical_1, Click_Typical_1, 
+         Touch_Atypical_0, Touch_Typical_0, Touch_Atypical_1, Touch_Typical_1) %>% 
+  gather(key = "parameter", value = "posterior") %>% 
+  mutate(group = ifelse(parameter == "Click_Atypical_0" 
+                        | parameter == "Click_Typical_0" 
+                        | parameter == "Click_Atypical_1" 
+                        | parameter == "Click_Typical_1", "click", "touch"),
+         condition = ifelse(parameter == "Click_Atypical_0" 
+                            | parameter == "Touch_Atypical_0"
+                            | parameter == "Click_Atypical_1" 
+                            | parameter == "Touch_Atypical_1", "Atypical", "Typical"),
+         correct = ifelse(parameter == "Click_Atypical_1" 
+                          | parameter == "Click_Typical_1" 
+                          | parameter == "Touch_Atypical_1" 
+                          | parameter == "Touch_Typical_1", "1", "0"))
+
+posteriors_agg <- posteriors3 %>% 
+  group_by(group, condition, correct) %>% 
+  summarise(mean_posterior = mean(posterior),
+            `95lowerCrI` = HDInterval::hdi(posterior, credMass = 0.95)[1],
+            `95higherCrI` = HDInterval::hdi(posterior, credMass = 0.95)[2])
+
+posteriors_agg %>%
+  ggplot(aes(x = condition, y = mean_posterior, color = condition, fill = condition)) +
+  geom_point(position = position_dodge(1), size = 4) +
+  geom_errorbar(aes(ymin = `95lowerCrI`, ymax = `95higherCrI`), width = 0.2) +
+  facet_grid(~ group + correct)
+```
+
+(e) Create a point plot that plots the data against the posterior means and 95% CrIs.
+
+```{r exercise2e_plot}
+posteriors_agg %>% 
+  ggplot(aes(x = condition, y = mean_posterior, color = condition, fill = condition)) +
+  geom_errorbar(aes(ymin = `95lowerCrI`, ymax = `95higherCrI`), width = 0.2, 
+                position = position_dodge(0.4)) +
+  geom_point(size = 4) +
+  geom_point(data = dolphin_agg2, aes(x = condition, y = MAD), alpha = 0.3, size = 2) +
+  facet_grid(~group + correct)
+```
+
+Bonus: (f) run the model with a three-way interaction `group x condition x correct`. Extract the posteriors for each individual combination of predictor levels and plot them against the data as in 2d.
+
+```{r exercise2f_model}
+model4 <- brm(
+  formula = MAD ~ group * condition * correct,
+  data = dolphin_agg2
+) # by default again 4 chains with 2000 iterations and 1000 warm up
+
+model4
+```
+
+
+```{r exercise2f_plot}
+
+posteriors4 <- model4 %>%
+  spread_draws(b_Intercept,
+               b_grouptouch,
+               b_conditionTypical,
+               b_correct1,
+               `b_grouptouch:conditionTypical`,
+               `b_grouptouch:correct1`,
+               `b_conditionTypical:correct1`,
+               `b_grouptouch:conditionTypical:correct1`) %>%
+  mutate(Click_Atypical_0 = b_Intercept,
+         Click_Typical_0 = b_Intercept + b_conditionTypical,
+         Click_Atypical_1 = b_Intercept + b_correct1,
+         Click_Typical_1  = b_Intercept + b_conditionTypical + b_correct1 +
+           `b_conditionTypical:correct1`,
+         Touch_Atypical_0 = b_Intercept + b_grouptouch,
+         Touch_Typical_0 = b_Intercept + b_grouptouch + b_conditionTypical +
+           `b_grouptouch:conditionTypical`,
+         Touch_Atypical_1 = b_Intercept + b_grouptouch + b_correct1 + `b_grouptouch:correct1`,
+         Touch_Typical_1 = b_Intercept + b_grouptouch + b_conditionTypical + b_correct1 +
+           `b_grouptouch:conditionTypical` + 
+           `b_grouptouch:correct1` + 
+           `b_conditionTypical:correct1` + 
+           `b_grouptouch:conditionTypical:correct1`) %>%
+  select(Click_Atypical_0, Click_Typical_0, Click_Atypical_1, Click_Typical_1, 
+         Touch_Atypical_0, Touch_Typical_0, Touch_Atypical_1, Touch_Typical_1) %>% 
+  gather(key = "parameter", value = "posterior") %>% 
+  mutate(group = ifelse(parameter == "Click_Atypical_0" 
+                        | parameter == "Click_Typical_0" 
+                        | parameter == "Click_Atypical_1" 
+                        | parameter == "Click_Typical_1", "click", "touch"),
+         condition = ifelse(parameter == "Click_Atypical_0" 
+                            | parameter == "Touch_Atypical_0"
+                            | parameter == "Click_Atypical_1" 
+                            | parameter == "Touch_Atypical_1", "Atypical", "Typical"),
+         correct = ifelse(parameter == "Click_Atypical_1" 
+                          | parameter == "Click_Typical_1" 
+                          | parameter == "Touch_Atypical_1" 
+                          | parameter == "Touch_Typical_1", "1", "0"))
+
+posteriors_agg2 <- posteriors4 %>% 
+  group_by(group, condition, correct) %>% 
+  summarise(mean_posterior = mean(posterior),
+            `95lowerCrI` = HDInterval::hdi(posterior, credMass = 0.95)[1],
+            `95higherCrI` = HDInterval::hdi(posterior, credMass = 0.95)[2])
+
+posteriors_agg2 %>% 
+  ggplot(aes(x = condition, y = mean_posterior, color = condition, fill = condition)) +
+  geom_errorbar(aes(ymin = `95lowerCrI`, ymax = `95higherCrI`), width = 0.2, 
+                position = position_dodge(0.4)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  geom_point(data = dolphin_agg2, aes(x = condition, y = MAD), alpha = 0.3, size = 2) +
+  facet_grid(~group + correct)
+```
+
